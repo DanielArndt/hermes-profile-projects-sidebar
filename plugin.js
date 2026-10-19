@@ -253,6 +253,14 @@ function writeDismissedAutoProjects(set) {
   }
 }
 
+function readStoredProjectScope() {
+  try {
+    return window.localStorage.getItem(PROJECT_SCOPE_STORAGE_KEY) || ALL_PROJECTS
+  } catch {
+    return ALL_PROJECTS
+  }
+}
+
 function writeStoredProjectScope(projectId) {
   try {
     const val = projectId || ALL_PROJECTS
@@ -2664,6 +2672,14 @@ function ProfileProjectsSection({
   const handleNewChatInProfile = event => {
     event?.stopPropagation?.()
     haptic('selection')
+    // A bare host.newChat() resolves its cwd from core's in-memory project
+    // scope, which plugins cannot update (they only write localStorage). With
+    // Home selected in the project switcher that can be a stale "last project".
+    // Route through the explicit Home flow so the draft is pinned detached.
+    if (readStoredProjectScope() === NO_PROJECT_ID && typeof onStartChatInProject === 'function') {
+      void onStartChatInProject(profileKey, { id: NO_PROJECT_ID, isNoProject: true }, false)
+      return
+    }
     host.newChat(profileKey)
   }
 
