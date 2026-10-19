@@ -3386,10 +3386,15 @@ function ProfileProjectsPane({ prefsAtom, updatePrefs, storage, os }) {
           .catch(() => null)
       }
 
+      // `workspaceTarget` is a one-shot cwd for just this draft (null = Home,
+      // detached). Newer desktops honour it directly; older ones ignore the
+      // option and the cwd pinning above/below still applies.
+      const newChatOptions = { workspaceTarget: isHome ? null : targetPath || undefined }
+
       if (!draftOnly || focusedStoredId || focusedRuntimeId || activeRuntimeId) {
-        host.newChat(prof)
+        host.newChat(prof, newChatOptions)
       } else if (prof !== activeProfileKey) {
-        host.newChat(prof)
+        host.newChat(prof, newChatOptions)
       }
 
       // Re-arm after host.newChat(prof) so async profile-switch effects
