@@ -3770,6 +3770,19 @@ export default {
   description:
     'Adds a Projects view tab in the sidebar broken down first by Profile, then by Project, and then by Session.',
   register(ctx) {
+    // Status dot palette: red = needs action (approval/clarify), yellow = agent
+    // working. Upstream paints these amber/accent, so override by class match.
+    const dotStyle = document.createElement('style')
+    dotStyle.id = `hermes-plugin-${ID}-status-dots`
+    dotStyle.textContent = `
+      span[role="status"][class*="bg-amber-500"] { background-color: #ef4444 !important; }
+      span[role="status"][class*="bg-(--ui-accent)"] { background-color: #eab308 !important; }
+      span[role="status"][class*="border-(--ui-accent)"] { border-color: #eab308 !important; }
+    `
+    document.getElementById(dotStyle.id)?.remove()
+    document.head.appendChild(dotStyle)
+    ctx.onDispose?.(() => dotStyle.remove())
+
     const prefs = atom({ ...DEFAULT_PREFS, ...ctx.storage.get('prefs', {}) })
 
     const updatePrefs = patch => {
