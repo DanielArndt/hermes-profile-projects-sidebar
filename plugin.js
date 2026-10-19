@@ -1712,6 +1712,28 @@ function ProjectSessionRow({
     }
   }
 
+  const [deleteOpen, setDeleteOpen] = useState(false)
+
+  const handleDeleteSession = async () => {
+    const targetId = session.id
+    const owner = profileKey && profileKey !== 'default' ? profileKey : null
+    const api = window.hermesDesktop?.api
+    if (!api) throw new Error('Desktop API unavailable')
+    // Scope to the owning profile in the URL as well (see host deleteSession).
+    await api({
+      ...(owner ? { profile: owner } : {}),
+      path: `/api/sessions/${encodeURIComponent(targetId)}${owner ? `?profile=${encodeURIComponent(owner)}` : ''}`,
+      method: 'DELETE'
+    })
+    setArchivedOptimistic(true)
+    if (isSelected) {
+      host.newChat?.(profileKey)
+    }
+    notifySidebarSessionsChanged()
+    onRefresh?.()
+    host.notify({ durationMs: 2_000, kind: 'success', message: 'Chat deleted' })
+  }
+
   const sessionWithColor = useMemo(
     () => (projectColor && !session.color ? { ...session, color: projectColor } : session),
     [session, projectColor]
@@ -1952,11 +1974,36 @@ function ProjectSessionRow({
                   jsx('span', { children: 'Archive chat' })
                 ]
               })
+            }),
+            jsx(ContextMenuItem, {
+              onSelect: () => setDeleteOpen(true),
+              children: jsxs('span', {
+                className: 'flex items-center gap-2 text-red-500',
+                children: [
+                  jsx(Codicon, { name: 'trash', size: '0.8rem' }),
+                  jsx('span', { children: 'Delete session…' })
+                ]
+              })
             })
           ]
         },
         'content'
-      )
+      ),
+      typeof ConfirmDialog === 'function' &&
+        jsx(
+          ConfirmDialog,
+          {
+            open: deleteOpen,
+            onClose: () => setDeleteOpen(false),
+            title: `Delete "${title}"?`,
+            description: 'This permanently deletes the session and its messages. This cannot be undone.',
+            confirmLabel: 'Delete',
+            destructive: true,
+            dismissOnConfirm: true,
+            onConfirm: () => handleDeleteSession()
+          },
+          'delete-dialog'
+        )
     ]
   })
 }
