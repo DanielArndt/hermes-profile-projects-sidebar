@@ -90,7 +90,6 @@ const DEFAULT_PREFS = {
   showEmptyProfiles: true,
   showEmptyProjects: true,
   showPathsOnRows: true,
-  showBranchBadges: true,
   projectSort: 'recent', // 'recent' | 'name' | 'sessions'
   previewLimit: '5', // '3' | '5' | '10' | 'all'
   shapeStyle: 'rounded', // 'rounded' | 'circle'
@@ -1610,7 +1609,6 @@ function ProjectSessionRow({
   projectColor,
   profileTintColor,
   isSelected,
-  showBranchBadges,
   siblingProjects,
   onRefresh
 }) {
@@ -1621,13 +1619,6 @@ function ProjectSessionRow({
       .trim() ||
     'Untitled chat'
   const age = formatCompactAge(session.last_active || session.started_at)
-  const branch = String(session.git_branch || '').trim()
-  const showBranch =
-    showBranchBadges &&
-    branch &&
-    branch !== 'main' &&
-    branch !== 'master' &&
-    branch !== 'HEAD'
 
   const handleOpen = event => {
     haptic('selection')
@@ -1866,14 +1857,7 @@ function ProjectSessionRow({
             className: 'min-w-0 flex-1 truncate text-[0.78125rem] leading-tight',
             title,
             children: title
-          }),
-          showBranch &&
-            jsx('span', {
-              className:
-                'max-w-20 shrink-0 truncate rounded bg-(--ui-control-active-background) px-1 py-px font-mono text-[0.5625rem] text-(--ui-text-tertiary)',
-              title: `Branch: ${branch}`,
-              children: branch
-            })
+          })
         ]
       }),
       jsxs('div', {
@@ -2505,7 +2489,6 @@ function ProfileProjectRow({
                       projectColor: project.color,
                       profileTintColor,
                       isSelected,
-                      showBranchBadges: prefs.showBranchBadges !== false,
                       siblingProjects,
                       onRefresh
                     },
@@ -3607,8 +3590,7 @@ function ProfileProjectsPane({ prefsAtom, updatePrefs, storage, os }) {
                           ['showHomeBucket', 'Home (no-project) bucket'],
                           ['showEmptyProjects', 'Empty projects'],
                           ['showEmptyProfiles', 'Profiles without projects'],
-                          ['showPathsOnRows', 'Workspace folder paths'],
-                          ['showBranchBadges', 'Git branch badges']
+                          ['showPathsOnRows', 'Workspace folder paths']
                         ].map(([key, label]) => {
                           const checked = prefs[key] !== false
                           return jsx(
@@ -4146,13 +4128,6 @@ export default {
                 'Display the compact filesystem path (~ /path) beneath each project title.',
               checked: currentPrefs.showPathsOnRows !== false,
               onChange: val => updatePrefs({ showPathsOnRows: val })
-            }),
-            jsx(ToggleRow, {
-              label: 'Show Git branch badges on chat rows',
-              description:
-                'Display non-default Git branch chips on session rows inside projects.',
-              checked: currentPrefs.showBranchBadges !== false,
-              onChange: val => updatePrefs({ showBranchBadges: val })
             })
           ]
         })
