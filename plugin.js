@@ -1698,10 +1698,45 @@ function ProjectSessionRow({
       }
       notifySidebarSessionsChanged()
       onRefresh?.()
-      host.notify({ durationMs: 2_000, kind: 'success', message: 'Chat archived' })
+      host.notify({
+        action: {
+          label: 'Undo',
+          onClick: () => void handleUndoArchive(targetId, owner)
+        },
+        durationMs: 6_000,
+        kind: 'success',
+        message: 'Chat archived'
+      })
     } catch (err) {
       setArchivedOptimistic(false)
       host.notifyError?.(err, 'Failed to archive chat')
+    }
+  }
+
+  // Not tied to row state: the row may have unmounted by the time Undo is clicked.
+  const handleUndoArchive = async (targetId, owner) => {
+    try {
+      const api = window.hermesDesktop?.api
+      if (api) {
+        await api({
+          ...(owner ? { profile: owner } : {}),
+          path: `/api/sessions/${encodeURIComponent(targetId)}`,
+          method: 'PATCH',
+          body: { archived: false, ...(owner ? { profile: owner } : {}) }
+        })
+      } else {
+        await host.request('session.archive', {
+          session_id: targetId,
+          archived: false,
+          ...(owner ? { profile: owner } : {})
+        })
+      }
+      setArchivedOptimistic(false)
+      notifySidebarSessionsChanged()
+      onRefresh?.()
+      host.notify({ durationMs: 1_800, kind: 'info', message: 'Chat restored' })
+    } catch (err) {
+      host.notifyError?.(err, 'Failed to undo archive')
     }
   }
 
