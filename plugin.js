@@ -2666,9 +2666,18 @@ function ProfileProjectsSection({
   }
 
   const profileHeader = jsxs('div', {
+    'data-focused': isFocusedProfile ? 'true' : undefined,
+    style:
+      isFocusedProfile && tintColor
+        ? {
+            backgroundImage: `linear-gradient(90deg, ${profileColorSoft(tintColor, 14)} 0%, ${profileColorSoft(tintColor, 5)} 60%, transparent 100%)`
+          }
+        : undefined,
     className: cn(
       'group flex min-h-7 w-full items-center justify-between gap-1.5 rounded-md px-1.5 py-1 transition-colors duration-100',
-      'hover:bg-(--ui-control-hover-background)'
+      isFocusedProfile
+        ? cn(!tintColor && 'bg-(--ui-control-active-background)', 'text-foreground')
+        : 'hover:bg-(--ui-control-hover-background)'
     ),
     onPointerEnter: () => {
       host.warmProfile?.(profileKey)
@@ -2703,12 +2712,6 @@ function ProfileProjectsSection({
                     jsx('span', {
                       className: 'truncate font-mono text-[0.625rem] text-(--ui-text-tertiary)',
                       children: `@${profileKey}`
-                    }),
-                  isFocusedProfile &&
-                    jsx('span', {
-                      className: cn('size-1.5 shrink-0 rounded-full', !tintColor && 'bg-(--ui-accent)'),
-                      style: tintColor ? { backgroundColor: tintColor } : undefined,
-                      title: 'Focused profile'
                     }),
                   jsx(DisclosureCaret, {
                     className:
