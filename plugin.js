@@ -2718,50 +2718,6 @@ function ProfileProjectsSection({
                 ]
               })
             ]
-          }),
-          jsx(Tip, {
-            label: `Open ${displayName} Bot Chat`,
-            side: 'top',
-            children: jsxs('button', {
-              type: 'button',
-              'aria-label': `Open ${displayName} Bot Chat`,
-              onClick: e => {
-                e.stopPropagation()
-                void onOpenBotChat?.(profileKey, profileRow, {
-                  openTab: Boolean(e.metaKey || e.ctrlKey || e.shiftKey)
-                })
-              },
-              onAuxClick: e => {
-                if (e.button === 1) {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  void onOpenBotChat?.(profileKey, profileRow, { openTab: true })
-                }
-              },
-              style:
-                isBotChatSelected && tintColor
-                  ? {
-                      backgroundColor: profileColorSoft(tintColor, 22),
-                      color: tintColor,
-                      boxShadow: `inset 0 0 0 1px ${profileColorSoft(tintColor, 45)}`
-                    }
-                  : undefined,
-              className: cn(
-                'inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium leading-none transition-colors',
-                isBotChatSelected
-                  ? !tintColor && 'bg-(--ui-accent)/20 text-(--ui-accent) ring-1 ring-(--ui-accent)/45'
-                  : 'bg-(--ui-control-active-background) text-(--ui-text-secondary) ring-1 ring-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
-              ),
-              children: [
-                canonicalTipId && typeof SessionStatusDot === 'function'
-                  ? jsx(SessionStatusDot, {
-                      storedSessionId: canonicalTipId,
-                      className: 'scale-90'
-                    })
-                  : jsx(Codicon, { name: 'hubot', size: '0.625rem' }),
-                jsx('span', { children: 'Bot' })
-              ]
-            })
           })
         ]
       }),
@@ -2805,6 +2761,56 @@ function ProfileProjectsSection({
       })
     ]
   })
+
+  const openBotChat = e => {
+    haptic('tap')
+    void onOpenBotChat?.(profileKey, profileRow, {
+      openTab: Boolean(e?.metaKey || e?.ctrlKey || e?.shiftKey || e?.button === 1)
+    })
+  }
+
+  const botChatRow = jsx(
+    'div',
+    {
+      style:
+        isBotChatSelected && tintColor
+          ? {
+              backgroundColor: profileColorSoft(tintColor, 18),
+              boxShadow: `inset 0 0 0 1px ${profileColorSoft(tintColor, 36)}`
+            }
+          : undefined,
+      className: cn(
+        'group relative flex min-h-6.5 w-full items-center rounded-md px-1.5 py-0.5 text-xs transition-colors duration-100',
+        isBotChatSelected
+          ? cn(!tintColor && 'bg-(--ui-control-active-background)', 'text-foreground')
+          : 'text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
+      ),
+      children: jsxs(RowButton, {
+        'aria-label': `Open ${displayName} Bot Chat`,
+        className: 'flex min-w-0 flex-1 items-center gap-1.5 bg-transparent py-0.5 text-left',
+        onClick: openBotChat,
+        onAuxClick: e => {
+          if (e.button === 1) {
+            e.preventDefault()
+            openBotChat(e)
+          }
+        },
+        children: [
+          canonicalTipId && typeof SessionStatusDot === 'function'
+            ? jsx(SessionStatusDot, { storedSessionId: canonicalTipId })
+            : jsx(Codicon, { name: 'hubot', size: '0.8125rem', className: 'shrink-0 text-(--ui-text-tertiary)' }),
+          jsx('span', {
+            className: cn(
+              'truncate text-[0.8125rem] leading-tight',
+              isBotChatSelected ? 'font-semibold text-foreground' : 'font-medium'
+            ),
+            children: 'Bot Chat'
+          })
+        ]
+      })
+    },
+    'bot-chat'
+  )
 
   return jsxs('div', {
     className: cn(
@@ -2951,8 +2957,9 @@ function ProfileProjectsSection({
             tintConfig && tintColor
               ? { borderColor: profileColorSoft(tintColor, tintConfig.guide) }
               : undefined,
-          children:
-            sortedProjects.length > 0
+          children: [
+            botChatRow,
+            ...(sortedProjects.length > 0
               ? sortedProjects.map(project => {
                   const projOpen = Boolean(searchQuery) || isProjectOpen(profileKey, project)
                   const isCurrentWorkspace =
@@ -3004,7 +3011,8 @@ function ProfileProjectsSection({
                     },
                     'empty-create'
                   )
-                ]
+                ])
+          ]
         })
     ]
   })
