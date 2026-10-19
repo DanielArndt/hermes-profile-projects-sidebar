@@ -727,23 +727,7 @@ function resolveAppearance(profileName, profileRow, assetUrl) {
 
 function resolveProfileTintColor(profileName, profileRow, assetUrl) {
   const key = normalizeProfile(profileName)
-  const { shape, color, image } = resolveAppearance(key, profileRow, assetUrl)
-
-  if (!image && isBlobShape(shape) && typeof blobatarSvg === 'function') {
-    try {
-      const { seed, kind } = parseBlobShape(shape, key)
-      const traits =
-        kind && BLOB_KIND_TRAIT[kind] !== undefined ? { shape: BLOB_KIND_TRAIT[kind] } : undefined
-      const svgMarkup = blobatarSvg(seed, { size: 18, ...(traits ? { traits } : {}) })
-      const fillMatch =
-        typeof svgMarkup === 'string' && svgMarkup.match(/fill="(#[0-9a-fA-F]{3,8})"/)
-      if (fillMatch?.[1]) {
-        return fillMatch[1]
-      }
-    } catch {
-      // Fall back to resolved color
-    }
-  }
+  const { color } = resolveAppearance(key, profileRow, assetUrl)
 
   const meta = readLiveBotMeta(key, profileRow)
   if (typeof meta?.color === 'string' && meta.color.trim()) {
