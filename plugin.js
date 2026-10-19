@@ -709,10 +709,19 @@ function resolveAppearance(profileName, profileRow, assetUrl) {
     }
   }
 
+  const shape = meta.shape || defaultShapeFor(key)
+
+  // The server-side avatar for a vector blobatar is a 160px raster of the face
+  // as it looked when first pushed. It is never refreshed after re-randomizing
+  // or locking a new seed, so it would mask the live face. Prefer the live
+  // blobatar unless the user explicitly chose a photo.
+  const isPhoto = meta.imageKind === 'photo' || Boolean(meta.image) || Boolean(meta.pet)
+  const image = isBlobShape(shape) && !isPhoto ? null : assetUrl || null
+
   return {
-    shape: meta.shape || defaultShapeFor(key),
+    shape,
     color: meta.color || profileColor(key) || PRIMARY_AVATAR_COLOR,
-    image: assetUrl || null
+    image
   }
 }
 
