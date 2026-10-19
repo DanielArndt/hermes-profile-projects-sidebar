@@ -2,6 +2,8 @@
 
 A Hermes Desktop UI plugin that adds a dedicated **Projects** view tab (`SESSIONS | BOTS | PROJECTS`) to the left sidebar, organizing workspaces hierarchically by **Profile → Project → Session**.
 
+![Projects tab showing profiles, projects and chats](docs/screenshot.png)
+
 ## Features
 
 - **Cross-Profile Hierarchy:** Queries every profile via `profiles.list` and resolves each profile's explicit (`projects.list`) and tree-grouped (`projects.tree`) projects and sessions over the gateway without cold-spawning secondary profile backends.
