@@ -1960,6 +1960,7 @@ function ProfileProjectRow({
   profileKey,
   profileDisplayName,
   profileTintColor,
+  profileGuideColor,
   allProfiles,
   siblingProjects,
   isOpen,
@@ -2405,6 +2406,7 @@ function ProfileProjectRow({
       isOpen &&
         jsxs('div', {
           className: 'ml-2.5 flex flex-col gap-px border-l border-(--ui-stroke-tertiary) py-0.5 pl-1.5',
+          style: profileGuideColor ? { borderColor: profileGuideColor } : undefined,
           children: [
             visibleSessions.length > 0
               ? visibleSessions.map(session => {
@@ -2979,6 +2981,8 @@ function ProfileProjectsSection({
                       profileKey,
                       profileDisplayName: displayName,
                       profileTintColor: tintColor,
+                      profileGuideColor:
+                        tintConfig && tintColor ? profileColorSoft(tintColor, tintConfig.guide) : undefined,
                       allProfiles,
                       siblingProjects: projects,
                       isOpen: projOpen,
