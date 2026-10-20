@@ -83,6 +83,8 @@ const PROFILE_SESSION_LIST_LIMIT = 200
 const PROJECT_SCOPE_STORAGE_KEY = 'hermes.desktop.projectScope'
 const WORKSPACE_CWD_STORAGE_KEY = 'hermes.desktop.workspace-cwd'
 const DISMISSED_AUTO_STORAGE_KEY = 'hermes.desktop.dismissedAutoProjects'
+const DONE_SESSIONS_STORAGE_KEY = 'hermes.plugin.projects-sidebar.doneSessions'
+const DONE_SESSIONS_EVENT = 'hermes-projects-sidebar:done-changed'
 
 const DEFAULT_PREFS = {
   showAutoProjects: true,
@@ -250,6 +252,43 @@ function writeDismissedAutoProjects(set) {
   } catch {
     // Ignore storage errors
   }
+}
+
+function readDoneSessions() {
+  try {
+    const raw = window.localStorage.getItem(DONE_SESSIONS_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return new Set(Array.isArray(parsed) ? parsed.filter(x => typeof x === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function setSessionDone(id, done) {
+  const set = readDoneSessions()
+  if (done) set.add(id)
+  else set.delete(id)
+  try {
+    window.localStorage.setItem(DONE_SESSIONS_STORAGE_KEY, JSON.stringify([...set]))
+  } catch {
+    // Ignore storage errors
+  }
+  window.dispatchEvent(new Event(DONE_SESSIONS_EVENT))
+}
+
+function useSessionDone(id) {
+  const [done, setDone] = useState(() => readDoneSessions().has(id))
+  useEffect(() => {
+    const sync = () => setDone(readDoneSessions().has(id))
+    sync()
+    window.addEventListener(DONE_SESSIONS_EVENT, sync)
+    window.addEventListener('storage', sync)
+    return () => {
+      window.removeEventListener(DONE_SESSIONS_EVENT, sync)
+      window.removeEventListener('storage', sync)
+    }
+  }, [id])
+  return done
 }
 
 function readStoredProjectScope() {
@@ -1660,6 +1699,14 @@ function ProjectSessionRow({
   }
 
   const [archivedOptimistic, setArchivedOptimistic] = useState(false)
+  const doneKey = session._lineage_root_id || session.id
+  const isDone = useSessionDone(doneKey)
+
+  const handleToggleDone = event => {
+    event?.preventDefault?.()
+    haptic('selection')
+    setSessionDone(doneKey, !isDone)
+  }
 
   const handleArchiveSession = async event => {
     event?.preventDefault?.()
@@ -1814,8 +1861,14 @@ function ProjectSessionRow({
     className: cn(
       'group relative flex min-h-6 w-full items-center justify-between gap-1.5 rounded-md pr-1.5 pl-1 text-xs transition-colors duration-100',
       isSelected
-        ? cn(!profileTintColor && 'bg-(--ui-control-active-background)', 'font-medium text-foreground')
-        : liveTurn
+        ? cn(
+            !profileTintColor && 'bg-(--ui-control-active-background)',
+            'font-medium',
+            isDone && !liveTurn ? 'text-(--ui-text-tertiary)' : 'text-foreground'
+          )
+        : isDone && !liveTurn
+          ? 'text-(--ui-text-quaternary) hover:bg-(--ui-control-hover-background) hover:text-(--ui-text-secondary)'
+          : liveTurn
           ? 'text-foreground hover:bg-(--ui-control-hover-background)'
           : 'text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
     ),
@@ -1854,10 +1907,20 @@ function ProjectSessionRow({
             })
           }),
           jsx('span', {
-            className: 'min-w-0 flex-1 truncate text-[0.78125rem] leading-tight',
+            className: cn(
+              'min-w-0 flex-1 truncate text-[0.78125rem] leading-tight',
+              isDone && 'opacity-60'
+            ),
             title,
             children: title
-          })
+          }),
+          isDone &&
+            jsx(Codicon, {
+              'aria-label': 'Done',
+              className: 'shrink-0 text-emerald-500/80',
+              name: 'check',
+              size: '0.8rem'
+            })
         ]
       }),
       jsxs('div', {
@@ -1870,6 +1933,20 @@ function ProjectSessionRow({
                 'min-w-4 pr-0.5 text-right text-[0.625rem] tabular-nums text-(--ui-text-quaternary)',
               children: age
             }),
+          jsx(Tip, {
+            label: isDone ? 'Mark as not done' : 'Mark as done',
+            side: 'top',
+            children: jsx(Button, {
+              'aria-label': isDone ? 'Mark as not done' : 'Mark as done',
+              size: 'icon-xs',
+              variant: 'ghost',
+              className:
+                'size-5 shrink-0 rounded-[4px] text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground',
+              onClick: handleToggleDone,
+              onPointerDown: e => e.stopPropagation(),
+              children: jsx(Codicon, { name: isDone ? 'discard' : 'check', size: '0.75rem' })
+            })
+          }),
           jsx(Tip, {
             label: 'Archive chat',
             side: 'top',
@@ -1939,6 +2016,16 @@ function ProjectSessionRow({
                 children: [
                   jsx(Codicon, { name: 'pinned', size: '0.8rem' }),
                   jsx('span', { children: 'Pin chat' })
+                ]
+              })
+            }),
+            jsx(ContextMenuItem, {
+              onSelect: () => handleToggleDone(),
+              children: jsxs('span', {
+                className: 'flex items-center gap-2',
+                children: [
+                  jsx(Codicon, { name: isDone ? 'discard' : 'check', size: '0.8rem' }),
+                  jsx('span', { children: isDone ? 'Mark as not done' : 'Mark as done' })
                 ]
               })
             }),
