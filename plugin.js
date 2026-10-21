@@ -85,6 +85,11 @@ const WORKSPACE_CWD_STORAGE_KEY = 'hermes.desktop.workspace-cwd'
 const DISMISSED_AUTO_STORAGE_KEY = 'hermes.desktop.dismissedAutoProjects'
 const DONE_SESSIONS_STORAGE_KEY = 'hermes.plugin.projects-sidebar.doneSessions'
 const DONE_SESSIONS_EVENT = 'hermes-projects-sidebar:done-changed'
+const COMPOSER_DRAFTS_STORAGE_KEY = 'hermes.plugin.projects-sidebar.composerDrafts'
+const FRESH_DRAFT_KEY_STORAGE_KEY = 'hermes.desktop.freshDraftKey'
+const DRAFT_POLL_MS = 250
+const DRAFT_RESTORE_STABLE_TICKS = 2
+const MAX_STORED_COMPOSER_DRAFTS = 50
 
 const DEFAULT_PREFS = {
   showAutoProjects: true,
@@ -149,6 +154,11 @@ const avatarInflight = new Set()
 const $expandedProjectTrees = atom({})
 const $openDialogRequest = atom(null)
 const $pendingDraftTarget = atom(null)
+// Unsent new-chat text kept per (profile, project) so it survives leaving the
+// draft for another session. `$composerDrafts` mirrors localStorage; the
+// active-draft id marks which sidebar draft row is currently on screen.
+const $composerDrafts = atom({})
+const $activeDraftId = atom(null)
 const $appearanceDigest = atom('')
 const canonicalChatFlights = new Map()
 
@@ -289,6 +299,175 @@ function useSessionDone(id) {
     }
   }, [id])
   return done
+}
+
+function draftId(profileName, projectId) {
+  const scope = !projectId || projectId === ALL_PROJECTS ? NO_PROJECT_ID : projectId
+  return `${normalizeProfile(profileName)}::${scope}`
+}
+
+function readStoredComposerDrafts() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY) || '{}')
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, v]) => v && typeof v.text === 'string' && v.text.trim())
+    )
+  } catch {
+    return {}
+  }
+}
+
+function writeComposerDrafts(next) {
+  let entries = Object.entries(next)
+  if (entries.length > MAX_STORED_COMPOSER_DRAFTS) {
+    entries = entries
+      .sort((a, b) => (b[1].updatedAt || 0) - (a[1].updatedAt || 0))
+      .slice(0, MAX_STORED_COMPOSER_DRAFTS)
+  }
+  const trimmed = Object.fromEntries(entries)
+  $composerDrafts.set(trimmed)
+  try {
+    window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify(trimmed))
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function saveComposerDraft(id, text) {
+  const current = $composerDrafts.get()
+  if (current[id]?.text === text) return
+  writeComposerDrafts({ ...current, [id]: { text, updatedAt: Date.now() } })
+}
+
+function discardComposerDraft(id) {
+  const current = $composerDrafts.get()
+  if (!id || !(id in current)) return
+  const next = { ...current }
+  delete next[id]
+  writeComposerDrafts(next)
+}
+
+function draftPreview(text) {
+  return (
+    String(text || '')
+      .replace(/\s+/g, ' ')
+      .trim() || 'Empty draft'
+  )
+}
+
+// Keeps the new-chat composer's text per (profile, project). Core only keeps
+// one "fresh draft" bucket and rotates it on every New Chat, so the text of an
+// abandoned draft is unreachable. This polls the sessionless composer, saves
+// its text under the current target, and puts it back when a fresh draft for
+// the same target opens empty.
+function installComposerDraftKeeper(ctx) {
+  $composerDrafts.set(readStoredComposerDrafts())
+
+  let lifecycleKey = null
+  let targetId = null
+  let stable = 0
+  let restored = false
+  let ownedId = null
+  let inFlight = false
+
+  const isFresh = () =>
+    !host.state.activeSessionId?.get?.() && !host.state.focusedStoredSessionId?.get?.()
+
+  const readFreshKey = () => {
+    try {
+      return window.localStorage.getItem(FRESH_DRAFT_KEY_STORAGE_KEY) || '__new__'
+    } catch {
+      return '__new__'
+    }
+  }
+
+  const reset = () => {
+    lifecycleKey = null
+    targetId = null
+    stable = 0
+    restored = false
+    ownedId = null
+    $activeDraftId.set(null)
+  }
+
+  const tick = async () => {
+    if (inFlight || !host.composer) return
+    if (!isFresh()) {
+      if (lifecycleKey !== null) reset()
+      return
+    }
+    inFlight = true
+    try {
+      const key = readFreshKey()
+      const id = draftId(host.state.profile?.get?.(), readStoredProjectScope())
+
+      if (key !== lifecycleKey) {
+        reset()
+        lifecycleKey = key
+        targetId = id
+        $activeDraftId.set(id)
+        return
+      }
+      if (id !== targetId) {
+        targetId = id
+        $activeDraftId.set(id)
+        if (!restored) stable = 0
+      }
+
+      if (!restored) {
+        if (++stable < DRAFT_RESTORE_STABLE_TICKS) return
+        const live = await host.composer.getDraft('new')
+        if (live === null || lifecycleKey !== key) {
+          stable = DRAFT_RESTORE_STABLE_TICKS - 1
+          return
+        }
+        const saved = $composerDrafts.get()[id]
+        if (!live.trim() && saved?.text) {
+          if (!(await host.composer.setDraft('new', saved.text))) {
+            stable = DRAFT_RESTORE_STABLE_TICKS - 1
+            return
+          }
+          ownedId = id
+        }
+        restored = true
+        return
+      }
+
+      const live = await host.composer.getDraft('new')
+      if (live === null || lifecycleKey !== key || !isFresh()) return
+      if (live.trim()) {
+        if (ownedId && ownedId !== id) discardComposerDraft(ownedId)
+        saveComposerDraft(id, live)
+        ownedId = id
+      } else {
+        discardComposerDraft(ownedId || id)
+        ownedId = null
+      }
+    } catch {
+      // Composer bus unavailable; try again next tick
+    } finally {
+      inFlight = false
+    }
+  }
+
+  ctx.setInterval(() => void tick(), DRAFT_POLL_MS)
+
+  // A sent draft opens a session; drop its saved text so it doesn't resurface.
+  ctx.onEvent('session.created', () => {
+    if (lifecycleKey === null) return
+    discardComposerDraft(ownedId || targetId)
+    reset()
+  })
+
+  const onStorage = event => {
+    if (event.key === COMPOSER_DRAFTS_STORAGE_KEY) $composerDrafts.set(readStoredComposerDrafts())
+  }
+  window.addEventListener('storage', onStorage)
+  ctx.onDispose?.(() => {
+    window.removeEventListener('storage', onStorage)
+    $activeDraftId.set(null)
+  })
 }
 
 function readStoredProjectScope() {
@@ -1642,6 +1821,66 @@ function ProjectEditorDialog({ state, onClose, profiles, onSaved }) {
 
 // ── Session Row inside a Project ─────────────────────────────────────────────
 
+function ProjectDraftRow({ draft, draftKey, profileTintColor, onOpen }) {
+  const isActive = useValue($activeDraftId) === draftKey
+  const preview = draftPreview(draft.text)
+
+  return jsxs('div', {
+    style:
+      isActive && profileTintColor
+        ? {
+            backgroundColor: profileColorSoft(profileTintColor, 20),
+            boxShadow: `inset 0 0 0 1px ${profileColorSoft(profileTintColor, 36)}`
+          }
+        : undefined,
+    className: cn(
+      'group relative flex min-h-6 w-full items-center justify-between gap-1.5 rounded-md pr-1.5 pl-1 text-xs transition-colors duration-100',
+      isActive
+        ? cn(!profileTintColor && 'bg-(--ui-control-active-background)', 'font-medium text-foreground')
+        : 'text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
+    ),
+    children: [
+      jsxs(RowButton, {
+        className: 'flex min-w-0 flex-1 items-center gap-1.5 bg-transparent py-1 text-left',
+        onClick: () => onOpen(),
+        children: [
+          jsx(SidebarRowLead, {
+            className: 'size-4 shrink-0',
+            children: jsx(Codicon, { name: 'edit', size: '0.75rem' })
+          }),
+          jsx('span', {
+            className: 'min-w-0 flex-1 truncate text-[0.78125rem] leading-tight italic',
+            title: draft.text,
+            children: preview
+          }),
+          jsx('span', {
+            className: 'shrink-0 text-[0.625rem] text-(--ui-text-quaternary)',
+            children: 'Draft'
+          })
+        ]
+      }),
+      jsx(Tip, {
+        label: 'Discard draft',
+        side: 'top',
+        children: jsx(Button, {
+          'aria-label': 'Discard draft',
+          size: 'icon-xs',
+          variant: 'ghost',
+          className:
+            'size-5 shrink-0 rounded-[4px] text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100 hover:bg-(--ui-control-active-background) hover:text-foreground',
+          onClick: event => {
+            event.stopPropagation()
+            discardComposerDraft(draftKey)
+            if (isActive) void host.composer?.setDraft('new', '')
+          },
+          onPointerDown: e => e.stopPropagation(),
+          children: jsx(Codicon, { name: 'close', size: '0.75rem' })
+        })
+      })
+    ]
+  })
+}
+
 function ProjectSessionRow({
   session,
   profileKey,
@@ -2133,6 +2372,12 @@ function ProfileProjectRow({
   os
 }) {
   const expandedMap = useValue($expandedProjectTrees)
+  const composerDrafts = useValue($composerDrafts)
+  const projectDraftKey = draftId(
+    profileKey,
+    project?.isNoProject || project?.id === NO_PROJECT_ID ? NO_PROJECT_ID : project?.id
+  )
+  const projectDraft = composerDrafts[projectDraftKey] || null
   const expandKey = `${profileKey}::${project.id}`
   const hydratedTree = expandedMap[expandKey] || null
   const [hydrating, setHydrating] = useState(false)
@@ -2562,6 +2807,17 @@ function ProfileProjectRow({
           className: 'ml-2.5 flex flex-col gap-px border-l border-(--ui-stroke-tertiary) py-0.5 pl-1.5',
           style: profileGuideColor ? { borderColor: profileGuideColor } : undefined,
           children: [
+            projectDraft &&
+              jsx(
+                ProjectDraftRow,
+                {
+                  draft: projectDraft,
+                  draftKey: projectDraftKey,
+                  profileTintColor,
+                  onOpen: () => onStartChatInProject(profileKey, project, false)
+                },
+                `draft::${projectDraftKey}`
+              ),
             visibleSessions.length > 0
               ? visibleSessions.map(session => {
                   const isSelected =
@@ -3956,6 +4212,8 @@ export default {
     }
 
     $appearanceDigest.set(computeAppearanceDigest())
+
+    installComposerDraftKeeper(ctx)
 
     const syncAppearanceChanges = () => {
       const next = computeAppearanceDigest()
