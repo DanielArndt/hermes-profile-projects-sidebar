@@ -370,9 +370,26 @@ function installComposerDraftKeeper(ctx) {
   let restored = false
   let ownedId = null
   let inFlight = false
+  // Fresh-draft lifecycle whose text was sent. Survives reset(): the app can
+  // briefly look "fresh" again while the send re-homes onto its new session
+  // (profile/gateway swap), and restoring into that window put the sent text
+  // back in the composer.
+  let sentKey = null
 
   const isFresh = () =>
     !host.state.activeSessionId?.get?.() && !host.state.focusedStoredSessionId?.get?.()
+
+  // The app flips busy the moment Enter is pressed on a fresh draft, before
+  // session.create returns, so this is the reliable "it was sent" signal.
+  const isSending = () => Boolean(host.state.busy?.get?.() || host.state.awaitingResponse?.get?.())
+
+  const markSent = () => {
+    if (lifecycleKey === null) return
+    discardComposerDraft(ownedId || targetId)
+    sentKey = lifecycleKey
+    ownedId = null
+    restored = true
+  }
 
   const readFreshKey = () => {
     try {
@@ -415,7 +432,17 @@ function installComposerDraftKeeper(ctx) {
         if (!restored) stable = 0
       }
 
+      if (isSending()) {
+        markSent()
+        return
+      }
+
       if (!restored) {
+        // Never refill a draft that was already sent.
+        if (key === sentKey) {
+          restored = true
+          return
+        }
         if (++stable < DRAFT_RESTORE_STABLE_TICKS) return
         const live = await host.composer.getDraft('new')
         if (live === null || lifecycleKey !== key) {
@@ -423,6 +450,11 @@ function installComposerDraftKeeper(ctx) {
           return
         }
         const saved = $composerDrafts.get()[id]
+        // Re-check after the await: a send may have started meanwhile.
+        if (isSending() || key === sentKey) {
+          restored = true
+          return
+        }
         if (!live.trim() && saved?.text) {
           if (!(await host.composer.setDraft('new', saved.text))) {
             stable = DRAFT_RESTORE_STABLE_TICKS - 1
@@ -435,7 +467,12 @@ function installComposerDraftKeeper(ctx) {
       }
 
       const live = await host.composer.getDraft('new')
-      if (live === null || lifecycleKey !== key || !isFresh()) return
+      if (live === null || lifecycleKey !== key || !isFresh() || key === sentKey) return
+      // A send that started during the await: don't re-save the text.
+      if (isSending()) {
+        markSent()
+        return
+      }
       if (live.trim()) {
         if (ownedId && ownedId !== id) discardComposerDraft(ownedId)
         saveComposerDraft(id, live)
@@ -453,12 +490,15 @@ function installComposerDraftKeeper(ctx) {
 
   ctx.setInterval(() => void tick(), DRAFT_POLL_MS)
 
-  // A sent draft opens a session; drop its saved text so it doesn't resurface.
-  ctx.onEvent('session.created', () => {
-    if (lifecycleKey === null) return
-    discardComposerDraft(ownedId || targetId)
-    reset()
-  })
+  // A sent draft must not resurface. The gateway emits no `session.created`
+  // event, so watch the app's busy flag instead: it flips on Enter, while the
+  // draft is still fresh, which also beats the 250ms poll.
+  const onBusy = value => {
+    if (value && isFresh()) markSent()
+  }
+  const unlisten = [host.state.busy, host.state.awaitingResponse]
+    .filter(store => typeof store?.listen === 'function')
+    .map(store => store.listen(onBusy))
 
   const onStorage = event => {
     if (event.key === COMPOSER_DRAFTS_STORAGE_KEY) $composerDrafts.set(readStoredComposerDrafts())
@@ -466,6 +506,7 @@ function installComposerDraftKeeper(ctx) {
   window.addEventListener('storage', onStorage)
   ctx.onDispose?.(() => {
     window.removeEventListener('storage', onStorage)
+    unlisten.forEach(stop => stop())
     $activeDraftId.set(null)
   })
 }
