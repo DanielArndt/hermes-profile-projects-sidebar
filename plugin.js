@@ -1930,8 +1930,21 @@ function ProjectSessionRow({
   profileTintColor,
   isSelected,
   siblingProjects,
+  project,
+  onStartChatInProject,
   onRefresh
 }) {
+  // After archiving/deleting the open chat, land the replacement draft in the
+  // same project. A bare host.newChat() falls back to the profile's default
+  // directory, which files the next chat under an unrelated auto-project.
+  const startReplacementChat = () => {
+    if (project && typeof onStartChatInProject === 'function') {
+      void onStartChatInProject(profileKey, project, false)
+    } else {
+      host.newChat?.(profileKey)
+    }
+  }
+
   const title =
     String(session.title || '').trim() ||
     String(session.preview || '')
@@ -1997,7 +2010,7 @@ function ProjectSessionRow({
     const owner = profileKey && profileKey !== 'default' ? profileKey : null
     setArchivedOptimistic(true)
     if (isSelected) {
-      host.newChat?.(profileKey)
+      startReplacementChat()
     }
     try {
       const api = window.hermesDesktop?.api
@@ -2074,7 +2087,7 @@ function ProjectSessionRow({
     })
     setArchivedOptimistic(true)
     if (isSelected) {
-      host.newChat?.(profileKey)
+      startReplacementChat()
     }
     notifySidebarSessionsChanged()
     onRefresh?.()
@@ -2876,6 +2889,8 @@ function ProfileProjectRow({
                       profileTintColor,
                       isSelected,
                       siblingProjects,
+                      project,
+                      onStartChatInProject,
                       onRefresh
                     },
                     `${profileKey}::${session.id}`
@@ -3124,6 +3139,20 @@ function ProfileProjectsSection({
     if (readStoredProjectScope() === NO_PROJECT_ID && typeof onStartChatInProject === 'function') {
       void onStartChatInProject(profileKey, { id: NO_PROJECT_ID, isNoProject: true }, false)
       return
+    }
+    // Otherwise pin the draft to the project the user is working in (selected
+    // project scope, else the one owning the live cwd). Bare host.newChat()
+    // would fall back to the profile's default directory and the session would
+    // surface under an unrelated auto-discovered project.
+    if (isFocusedProfile && typeof onStartChatInProject === 'function') {
+      const scopeId = readStoredProjectScope()
+      const target =
+        projects.find(p => p.id === scopeId && !p.isNoProject) ||
+        (rawCwd ? matchProjectForCwd(rawCwd, projects) : null)
+      if (target && projectRootCwd(target)) {
+        void onStartChatInProject(profileKey, target, false)
+        return
+      }
     }
     host.newChat(profileKey)
   }
