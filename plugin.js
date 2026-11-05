@@ -2174,6 +2174,7 @@ function ProjectSessionRow({
             children: jsx('span', {
               ref: dotWrapRef,
               className: 'inline-flex items-center justify-center',
+              'data-session-done': isDone ? '' : undefined,
               children:
                 typeof SessionStatusDot === 'function'
                   ? jsx(SessionStatusDot, {
@@ -4224,6 +4225,14 @@ export default {
       span[role="status"][class*="bg-amber-500"] { background-color: #ef4444 !important; }
       span[role="status"][class*="bg-(--ui-accent)"] { background-color: #eab308 !important; }
       span[role="status"][class*="border-(--ui-accent)"] { border-color: #eab308 !important; }
+      /* Done sessions: hollow dot. Mask punches out the centre so the ring
+         keeps whatever colour the dot already has (project, unread, ...). */
+      [data-session-done] span.rounded-full {
+        width: 0.375rem !important;
+        height: 0.375rem !important;
+        -webkit-mask: radial-gradient(circle closest-side, transparent 1.9px, #000 2.1px);
+        mask: radial-gradient(circle closest-side, transparent 1.9px, #000 2.1px);
+      }
     `
     document.getElementById(dotStyle.id)?.remove()
     document.head.appendChild(dotStyle)
