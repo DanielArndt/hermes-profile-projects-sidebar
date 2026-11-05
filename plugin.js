@@ -97,6 +97,7 @@ const DEFAULT_PREFS = {
   showEmptyProfiles: true,
   showEmptyProjects: true,
   showPathsOnRows: true,
+  showEmptyChatsPlaceholder: true,
   projectSort: 'recent', // 'recent' | 'name' | 'sessions'
   previewLimit: '5', // '3' | '5' | '10' | 'all'
   shapeStyle: 'rounded', // 'rounded' | 'circle'
@@ -2880,7 +2881,8 @@ function ProfileProjectRow({
                     `${profileKey}::${session.id}`
                   )
                 })
-              : jsxs('button', {
+              : prefs.showEmptyChatsPlaceholder !== false &&
+                jsxs('button', {
                   type: 'button',
                   className:
                     'flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-[0.71875rem] text-(--ui-text-quaternary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-(--ui-text-secondary)',
@@ -3980,7 +3982,8 @@ function ProfileProjectsPane({ prefsAtom, updatePrefs, storage, os }) {
                           ['showHomeBucket', 'Home (no-project) bucket'],
                           ['showEmptyProjects', 'Empty projects'],
                           ['showEmptyProfiles', 'Profiles without projects'],
-                          ['showPathsOnRows', 'Workspace folder paths']
+                          ['showPathsOnRows', 'Workspace folder paths'],
+                          ['showEmptyChatsPlaceholder', '“No chats yet” placeholder']
                         ].map(([key, label]) => {
                           const checked = prefs[key] !== false
                           return jsx(
@@ -4528,6 +4531,13 @@ export default {
                 'Display the compact filesystem path (~ /path) beneath each project title.',
               checked: currentPrefs.showPathsOnRows !== false,
               onChange: val => updatePrefs({ showPathsOnRows: val })
+            }),
+            jsx(ToggleRow, {
+              label: 'Show “No chats yet” placeholder',
+              description:
+                'Display the “No chats yet — start a chat” button inside expanded projects that have no chats.',
+              checked: currentPrefs.showEmptyChatsPlaceholder !== false,
+              onChange: val => updatePrefs({ showEmptyChatsPlaceholder: val })
             })
           ]
         })
