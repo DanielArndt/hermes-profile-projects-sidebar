@@ -2135,6 +2135,8 @@ function ProjectSessionRow({
         setDotState('stalled')
       } else if (cls.includes('bg-(--ui-accent)')) {
         setDotState('working')
+      } else if (cls.includes('border-(--ui-text-tertiary)')) {
+        setDotState('background')
       } else {
         setDotState('idle')
       }
@@ -2151,8 +2153,13 @@ function ProjectSessionRow({
     return () => obs.disconnect()
   }, [session.id])
 
+  // Async delegation ends the parent turn while its children keep working.
+  // The host groups this with background processes; both still need an arc.
   const showsArc =
-    dotState === 'working' || Boolean(session.running) || Boolean(isSelected && isBusy)
+    dotState === 'working' ||
+    dotState === 'background' ||
+    Boolean(session.running) ||
+    Boolean(isSelected && isBusy)
   const liveTurn =
     showsArc || dotState === 'needs-input' || dotState === 'stalled'
 
@@ -2203,7 +2210,7 @@ function ProjectSessionRow({
             children: jsx('span', {
               ref: dotWrapRef,
               className: 'inline-flex items-center justify-center',
-              'data-session-done': isDone ? '' : undefined,
+              'data-session-done': isDone && !liveTurn ? '' : undefined,
               children:
                 typeof SessionStatusDot === 'function'
                   ? jsx(SessionStatusDot, {
@@ -4272,6 +4279,12 @@ export default {
       span[role="status"][class*="bg-amber-500"] { background-color: #ef4444 !important; }
       span[role="status"][class*="bg-(--ui-accent)"] { background-color: #eab308 !important; }
       span[role="status"][class*="border-(--ui-accent)"] { border-color: #eab308 !important; }
+      /* The parent may be quiet, but subagents/background jobs are still working.
+         Preserve the host classes so the row observer can identify the state. */
+      span[role="status"][class*="border-(--ui-text-tertiary)"] {
+        background-color: #eab308 !important;
+        border-color: #eab308 !important;
+      }
       /* Done sessions: hollow dot. Mask punches out the centre so the ring
          keeps whatever colour the dot already has (project, unread, ...). */
       [data-session-done] span.rounded-full {
