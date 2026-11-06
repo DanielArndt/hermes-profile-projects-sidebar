@@ -45,7 +45,7 @@ test('parent waiting on subagents remains live with a running arc', () => {
 
 test('existing working, stalled, attention and idle states retain their meaning', () => {
   assert.deepEqual(rowStatus(`${base} bg-(--ui-accent)`), { dotState: 'working', showsArc: true, liveTurn: true })
-  assert.deepEqual(rowStatus(`${base} border border-(--ui-accent)`), { dotState: 'stalled', showsArc: false, liveTurn: true })
+  assert.deepEqual(rowStatus(`${base} border border-(--ui-accent)`), { dotState: 'stalled', showsArc: true, liveTurn: true })
   assert.deepEqual(rowStatus(`${base} bg-amber-500`), { dotState: 'needs-input', showsArc: false, liveTurn: true })
   assert.deepEqual(rowStatus(null), { dotState: 'idle', showsArc: false, liveTurn: false })
   assert.equal(rowStatus(null, { selected: true, busy: true }).showsArc, true)
@@ -57,6 +57,15 @@ test('background work receives a filled yellow status dot', () => {
   const css = source.slice(styleStart, source.indexOf('`', styleStart + 'dotStyle.textContent = `'.length) + 1)
   const rule = css.match(/span\[role="status"\]\[class\*="border-\(--ui-text-tertiary\)"\]\s*\{([^}]+)\}/)
   assert.ok(rule, 'background status dot needs a palette override')
+  assert.match(rule[1], /background-color:\s*#eab308\s*!important/)
+  assert.match(rule[1], /border-color:\s*#eab308\s*!important/)
+})
+
+test('quiet but still-running work receives a filled yellow status dot', () => {
+  const styleStart = source.indexOf('dotStyle.textContent = `')
+  const css = source.slice(styleStart, source.indexOf('`', styleStart + 'dotStyle.textContent = `'.length) + 1)
+  const rule = css.match(/span\[role="status"\]\[class\*="border-\(--ui-accent\)"\]\s*\{([^}]+)\}/)
+  assert.ok(rule, 'stalled status dot needs a palette override')
   assert.match(rule[1], /background-color:\s*#eab308\s*!important/)
   assert.match(rule[1], /border-color:\s*#eab308\s*!important/)
 })

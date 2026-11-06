@@ -2157,6 +2157,7 @@ function ProjectSessionRow({
   // The host groups this with background processes; both still need an arc.
   const showsArc =
     dotState === 'working' ||
+    dotState === 'stalled' ||
     dotState === 'background' ||
     Boolean(session.running) ||
     Boolean(isSelected && isBusy)
@@ -4278,7 +4279,11 @@ export default {
     dotStyle.textContent = `
       span[role="status"][class*="bg-amber-500"] { background-color: #ef4444 !important; }
       span[role="status"][class*="bg-(--ui-accent)"] { background-color: #eab308 !important; }
-      span[role="status"][class*="border-(--ui-accent)"] { border-color: #eab308 !important; }
+      /* A quiet watchdog window does not mean the running turn has ended. */
+      span[role="status"][class*="border-(--ui-accent)"] {
+        background-color: #eab308 !important;
+        border-color: #eab308 !important;
+      }
       /* The parent may be quiet, but subagents/background jobs are still working.
          Preserve the host classes so the row observer can identify the state. */
       span[role="status"][class*="border-(--ui-text-tertiary)"] {
