@@ -824,6 +824,35 @@ async function openProfileBotChat(profileKey, profileRow, { openTab = false } = 
   return createPromise
 }
 
+// Session writes (archive/delete) are fenced upstream: read the session's
+// mutation snapshot, then send request_id + expected_revision (+ generation)
+// with the write. Older backends without the snapshot route get the plain write.
+async function mutateSessionHttp(api, sessionId, owner, method, payload) {
+  const base = `/api/sessions/${encodeURIComponent(sessionId)}`
+  const query = owner ? `?profile=${encodeURIComponent(owner)}` : ''
+  const route = owner ? { profile: owner } : {}
+  let identity = {}
+  try {
+    const snap = await api({ ...route, path: `${base}/mutation-snapshot${query}` })
+    if (snap && snap.exists) {
+      identity = {
+        request_id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        expected_revision: snap.runtime_revision,
+        ...(Number.isSafeInteger(snap.runtime_generation) ? { expected_generation: snap.runtime_generation } : {})
+      }
+    }
+  } catch (err) {
+    if (!/404|not found/i.test(String(err?.message ?? err))) throw err
+  }
+  if (method === 'DELETE') {
+    const params = new URLSearchParams(owner ? { profile: owner } : {})
+    for (const [k, v] of Object.entries(identity)) params.set(k, String(v))
+    const qs = params.toString()
+    return api({ ...route, path: qs ? `${base}?${qs}` : base, method })
+  }
+  return api({ ...route, path: base, method, body: { ...payload, ...identity, ...route } })
+}
+
 function notifySidebarSessionsChanged() {
   try {
     if (typeof BroadcastChannel !== 'undefined') {
@@ -2015,12 +2044,7 @@ function ProjectSessionRow({
     try {
       const api = window.hermesDesktop?.api
       if (api) {
-        await api({
-          ...(owner ? { profile: owner } : {}),
-          path: `/api/sessions/${encodeURIComponent(targetId)}`,
-          method: 'PATCH',
-          body: { archived: true, ...(owner ? { profile: owner } : {}) }
-        })
+        await mutateSessionHttp(api, targetId, owner, 'PATCH', { archived: true, pinned: false })
       } else {
         await host.request('session.archive', {
           session_id: targetId,
@@ -2050,12 +2074,7 @@ function ProjectSessionRow({
     try {
       const api = window.hermesDesktop?.api
       if (api) {
-        await api({
-          ...(owner ? { profile: owner } : {}),
-          path: `/api/sessions/${encodeURIComponent(targetId)}`,
-          method: 'PATCH',
-          body: { archived: false, ...(owner ? { profile: owner } : {}) }
-        })
+        await mutateSessionHttp(api, targetId, owner, 'PATCH', { archived: false })
       } else {
         await host.request('session.archive', {
           session_id: targetId,
@@ -2080,11 +2099,7 @@ function ProjectSessionRow({
     const api = window.hermesDesktop?.api
     if (!api) throw new Error('Desktop API unavailable')
     // Scope to the owning profile in the URL as well (see host deleteSession).
-    await api({
-      ...(owner ? { profile: owner } : {}),
-      path: `/api/sessions/${encodeURIComponent(targetId)}${owner ? `?profile=${encodeURIComponent(owner)}` : ''}`,
-      method: 'DELETE'
-    })
+    await mutateSessionHttp(api, targetId, owner, 'DELETE', {})
     setArchivedOptimistic(true)
     if (isSelected) {
       startReplacementChat()
