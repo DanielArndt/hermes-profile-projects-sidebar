@@ -11,6 +11,7 @@ A Hermes Desktop UI plugin that adds a dedicated **Projects** view tab (`SESSION
 - **Project Rows & Home Bucket:** Always-present **Home** (`__no_project__`) bucket sorted first per profile, custom project icons and colors, compact filesystem paths, and an always-visible `+` button to start a new chat directly in any `(Profile, Project)` pair.
 - **Scheduled (Cron) Bucket:** Collapsible **Scheduled** bucket per profile displaying configured cron jobs with live countdowns, running states, and quick-trigger actions (`zap`). Expanding any job peeks recent execution run sessions with live glowing status, opening transcripts on click.
 - **Session Rows:** Live glowing working rectangle (`arc-border arc-row`) when a session is active, including while sub-agents or background terminal jobs continue after the parent turn ends. Active work shows a filled yellow status dot, including quiet-but-running turns and background work. Includes a persistent archive/unarchive button and context menu actions to rename, open in new tab, move between projects (including back to Home), or delete.
+- **Auto-Archive Done Chats:** Optional sweep that archives chats you marked as **done** once they have been inactive for a configurable number of days (default 3), counted from the later of the chat's last activity and when you marked it done. Pinned, running, and currently open chats are never archived, and nothing is deleted. A chat that was auto-archived and then restored is left alone until you mark it done again.
 - **Draft Retention:** Unsent text in a new chat is saved per `(Profile, Project)` and restored the next time you open a new chat for that pair. Each saved draft also shows as a `Draft` row at the top of its project (click to resume, `×` to discard); sending the message clears it.
 - **Project Management:** Create, edit, delete, or transfer projects between profiles directly from the sidebar.
 
@@ -34,6 +35,7 @@ Configure under **Settings → Plugins → Profile Projects Sidebar**:
 - **Show Home (no-project) bucket**
 - **Show Scheduled (cron) bucket**
 - **Hide Scheduled bucket when empty**
+- **Auto-archive done chats** (off by default), with **Archive done chats after**: 1, 3, 7, 14, or 30 days of inactivity
 - **Show empty explicit projects**
 - **Show profiles without projects**
 - **Show workspace folder paths on project rows**

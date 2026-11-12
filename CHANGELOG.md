@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add opt-in **Auto-archive done chats** setting: a periodic sweep archives only sessions marked as done once they have been idle for a configurable number of days (1/3/7/14/30, default 3), measured from the later of last activity and the done marker.
+- Skip pinned, running, scheduled-owned, currently focused, and canonical Bot Chat sessions; archive through the existing profile-scoped, mutation-fenced session PATCH so nothing is deleted.
+- Record when each chat was marked done and whether the sweep already archived it, so restored chats are not re-archived until re-marked done, and re-marking re-arms the sweep.
+- Add `tests/auto-archive-done.test.mjs` covering sweep eligibility, grace periods, lineage tips, multi-profile lookup, pagination, failure retry, and done-marker metadata.
+
 - Add collapsible **Scheduled** (cron) bucket per profile, listing configured cron jobs with live schedules, next-run countdowns, active execution states, and quick-trigger actions (`zap`).
 - Support expanding each scheduled job to peek recent run sessions with live glowing status, status dots, and one-click transcript navigation.
 - Add real-time `cron.changed` event subscription to refresh scheduled tasks and runs dynamically without manual reloads.

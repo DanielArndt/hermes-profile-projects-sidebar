@@ -84,7 +84,13 @@ const PROJECT_SCOPE_STORAGE_KEY = 'hermes.desktop.projectScope'
 const WORKSPACE_CWD_STORAGE_KEY = 'hermes.desktop.workspace-cwd'
 const DISMISSED_AUTO_STORAGE_KEY = 'hermes.desktop.dismissedAutoProjects'
 const DONE_SESSIONS_STORAGE_KEY = 'hermes.plugin.projects-sidebar.doneSessions'
+const DONE_SESSIONS_META_STORAGE_KEY = 'hermes.plugin.projects-sidebar.doneSessionMeta'
 const DONE_SESSIONS_EVENT = 'hermes-projects-sidebar:done-changed'
+const AUTO_ARCHIVE_SWEEP_MS = 60 * 60 * 1000
+const AUTO_ARCHIVE_MIN_GAP_MS = 60 * 1000
+const AUTO_ARCHIVE_PAGE_LIMIT = 100
+const AUTO_ARCHIVE_MAX_PAGES = 5
+const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 const COMPOSER_DRAFTS_STORAGE_KEY = 'hermes.plugin.projects-sidebar.composerDrafts'
 const FRESH_DRAFT_KEY_STORAGE_KEY = 'hermes.desktop.freshDraftKey'
 const DRAFT_POLL_MS = 250
@@ -98,6 +104,8 @@ const DEFAULT_PREFS = {
   showEmptyProjects: true,
   showScheduledBucket: true,
   hideEmptyScheduled: false,
+  autoArchiveDone: false,
+  autoArchiveDoneDays: DEFAULT_AUTO_ARCHIVE_DAYS,
   showPathsOnRows: true,
   showEmptyChatsPlaceholder: true,
   projectSort: 'recent', // 'recent' | 'name' | 'sessions'
@@ -277,15 +285,53 @@ function readDoneSessions() {
   }
 }
 
+// When each chat was marked done, plus whether the auto-archive sweep already
+// hid it. Stored separately so existing done markers keep working; entries
+// without a timestamp simply get no grace period beyond their last activity.
+function readDoneSessionMeta() {
+  const meta = new Map()
+  try {
+    const raw = window.localStorage.getItem(DONE_SESSIONS_META_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : {}
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const [id, value] of Object.entries(parsed)) {
+        if (value && typeof value === 'object') meta.set(id, value)
+      }
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return meta
+}
+
+function writeDoneSessionMeta(meta) {
+  try {
+    window.localStorage.setItem(
+      DONE_SESSIONS_META_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(meta))
+    )
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 function setSessionDone(id, done) {
   const set = readDoneSessions()
-  if (done) set.add(id)
-  else set.delete(id)
+  const meta = readDoneSessionMeta()
+  if (done) {
+    set.add(id)
+    // Re-marking a chat done re-arms auto-archive for it, even after a restore.
+    meta.set(id, { at: Date.now() })
+  } else {
+    set.delete(id)
+    meta.delete(id)
+  }
   try {
     window.localStorage.setItem(DONE_SESSIONS_STORAGE_KEY, JSON.stringify([...set]))
   } catch {
     // Ignore storage errors
   }
+  writeDoneSessionMeta(meta)
   window.dispatchEvent(new Event(DONE_SESSIONS_EVENT))
 }
 
@@ -865,6 +911,209 @@ function notifySidebarSessionsChanged() {
   } catch {
     // Ignore
   }
+}
+
+// ── Auto-archive for done sessions ──────────────────────────────────────────
+// Mirrors Hermes' own idle auto-archive sweep, but scoped to chats this plugin
+// marks "done": archive once the chat has been inactive for N days, never
+// delete, and leave pinned / running / open chats alone. Nothing is archived
+// before the grace period measured from the moment it was marked done, so a
+// freshly finished chat is not hidden out from under the user.
+
+function autoArchiveDoneDays(prefs) {
+  const days = Number(prefs?.autoArchiveDoneDays)
+  return Number.isFinite(days) && days > 0 ? days : DEFAULT_AUTO_ARCHIVE_DAYS
+}
+
+function doneSessionKeyForRow(row, doneIds) {
+  const root = row?._lineage_root_id
+  if (root && doneIds.has(root)) return root
+  return row?.id && doneIds.has(row.id) ? row.id : null
+}
+
+function autoArchiveCandidateForRow(row, doneKey, meta, { nowMs, days, focusedIds }) {
+  if (!row?.id || isCanonicalBotChatRow(row)) return null
+  // Same exemptions as the core sweep (pinned), plus anything still live or
+  // currently open: archiving those would yank a chat the user is looking at.
+  if (row.archived || row.pinned || row.is_active || row.scheduler_owned || row.running) {
+    return null
+  }
+  if (
+    focusedIds?.has(row.id) ||
+    (row._lineage_root_id && focusedIds.has(row._lineage_root_id))
+  ) {
+    return null
+  }
+  // Already swept once: a deliberate unarchive is respected until the user
+  // marks the chat done again (which clears this marker).
+  if (meta?.autoArchivedAt) return null
+  const markedAtMs = Number(meta?.at) || 0
+  const lastActiveMs = Math.max(
+    markedAtMs,
+    ...['last_active', 'last_activity_at', 'ended_at', 'started_at'].map(
+      key => (Number(row[key]) || 0) * 1000
+    )
+  )
+  if (nowMs - lastActiveMs < days * 86_400_000) return null
+  return { id: row.id, doneKey }
+}
+
+// Dependency-injected so the headless tests can drive it without the host.
+// `profiles` are profile keys, `listSessionsPage(profile, offset)` returns a
+// REST /api/sessions page, and `archiveSession(candidate)` performs the write.
+async function sweepAutoArchiveDone(deps) {
+  const { prefs, doneIds, meta, profiles, listSessionsPage, archiveSession } = deps
+  const nowMs = deps.nowMs ?? Date.now()
+  const focusedIds = deps.focusedIds || new Set()
+  const result = { skipped: false, archived: 0, candidates: [] }
+  if (prefs?.autoArchiveDone !== true || doneIds.size === 0) {
+    result.skipped = true
+    return result
+  }
+  const days = autoArchiveDoneDays(prefs)
+  const candidates = []
+  // A done id is claimed by the first profile that lists it; ids the current
+  // page window never reaches are simply left for a later sweep.
+  const claimed = new Set()
+  for (const profile of profiles) {
+    if (claimed.size >= doneIds.size) break
+    for (let pageIndex = 0; pageIndex < AUTO_ARCHIVE_MAX_PAGES; pageIndex += 1) {
+      let page
+      try {
+        page = await listSessionsPage(profile, pageIndex * AUTO_ARCHIVE_PAGE_LIMIT)
+      } catch {
+        break // Profile offline or store unreadable: try the next one.
+      }
+      const rows = Array.isArray(page?.sessions) ? page.sessions : []
+      for (const row of rows) {
+        const doneKey = doneSessionKeyForRow(row, doneIds)
+        if (!doneKey || claimed.has(doneKey)) continue
+        claimed.add(doneKey)
+        const candidate = autoArchiveCandidateForRow(row, doneKey, meta.get(doneKey), {
+          nowMs,
+          days,
+          focusedIds
+        })
+        if (candidate) candidates.push({ ...candidate, profile })
+      }
+      if (rows.length < AUTO_ARCHIVE_PAGE_LIMIT || claimed.size >= doneIds.size) break
+    }
+  }
+
+  const nextMeta = new Map(meta)
+  for (const candidate of candidates) {
+    result.candidates.push(candidate.id)
+    try {
+      await archiveSession(candidate)
+      nextMeta.set(candidate.doneKey, {
+        ...(nextMeta.get(candidate.doneKey) || {}),
+        autoArchivedAt: nowMs
+      })
+      result.archived += 1
+    } catch {
+      // Leave the marker untouched so the next sweep retries.
+    }
+  }
+  if (result.archived > 0) deps.writeMeta?.(nextMeta)
+  return result
+}
+
+function installAutoArchiveDone(ctx, prefs, invalidateAll) {
+  let running = false
+  let lastRunAt = 0
+
+  const tick = async () => {
+    if (running) return
+    if (Date.now() - lastRunAt < AUTO_ARCHIVE_MIN_GAP_MS) return
+    if (prefs.get().autoArchiveDone !== true) return
+    if (readDoneSessions().size === 0) return
+    if (host.state.gateway?.get?.() !== 'open') return
+    const api = typeof window !== 'undefined' ? window.hermesDesktop?.api : null
+    if (typeof api !== 'function') return
+    running = true
+    lastRunAt = Date.now()
+    try {
+      let rawProfiles = []
+      try {
+        const rpc = await host.request('profiles.list', {})
+        if (Array.isArray(rpc?.profiles) && rpc.profiles.length > 0) rawProfiles = rpc.profiles
+      } catch {
+        // Fall through to host.profiles.list()
+      }
+      if (rawProfiles.length === 0) {
+        try {
+          const res = await host.profiles.list()
+          if (Array.isArray(res?.profiles)) rawProfiles = res.profiles
+        } catch {
+          // Ignore
+        }
+      }
+      if (rawProfiles.length === 0) rawProfiles = [{ name: 'default' }]
+      const profiles = [...new Set(rawProfiles.map(p => normalizeProfile(p?.name)))]
+
+      const result = await sweepAutoArchiveDone({
+        prefs: prefs.get(),
+        doneIds: readDoneSessions(),
+        meta: readDoneSessionMeta(),
+        profiles,
+        focusedIds: new Set(
+          [
+            host.state.activeSessionId?.get?.(),
+            host.state.focusedStoredSessionId?.get?.()
+          ].filter(Boolean)
+        ),
+        listSessionsPage: (profile, offset) =>
+          api({
+            profile,
+            path: `/api/sessions?limit=${AUTO_ARCHIVE_PAGE_LIMIT}&offset=${offset}&order=recent&archived=include&profile=${encodeURIComponent(profile)}`
+          }),
+        archiveSession: candidate => {
+          const owner = candidate.profile && candidate.profile !== 'default' ? candidate.profile : null
+          return mutateSessionHttp(api, candidate.id, owner, 'PATCH', { archived: true })
+        },
+        writeMeta: writeDoneSessionMeta
+      })
+      if (result.archived > 0) {
+        notifySidebarSessionsChanged()
+        invalidateAll()
+        host.notify({
+          durationMs: 4_000,
+          kind: 'info',
+          message: `Auto-archived ${result.archived} done chat${result.archived === 1 ? '' : 's'}`
+        })
+      }
+    } catch {
+      // Housekeeping must never break the sidebar; the next sweep retries.
+    } finally {
+      running = false
+    }
+  }
+
+  const interval = window.setInterval(() => void tick(), AUTO_ARCHIVE_SWEEP_MS)
+  const onDoneChanged = () => void tick()
+  const onFocus = () => void tick()
+  window.addEventListener(DONE_SESSIONS_EVENT, onDoneChanged)
+  window.addEventListener('focus', onFocus)
+  ctx.onDispose?.(() => {
+    window.clearInterval(interval)
+    window.removeEventListener(DONE_SESSIONS_EVENT, onDoneChanged)
+    window.removeEventListener('focus', onFocus)
+  })
+  if (typeof prefs.listen === 'function') {
+    const unsub = prefs.listen((next, previous) => {
+      if (
+        next.autoArchiveDone !== previous?.autoArchiveDone ||
+        next.autoArchiveDoneDays !== previous?.autoArchiveDoneDays
+      ) {
+        lastRunAt = 0
+        void tick()
+      }
+    })
+    ctx.onDispose?.(unsub)
+  }
+  // Give the gateway a moment to come up before the first sweep.
+  const initial = window.setTimeout(() => void tick(), 20_000)
+  ctx.onDispose?.(() => window.clearTimeout(initial))
 }
 
 // ── Profile Avatar Resolution ────────────────────────────────────────────────
@@ -5233,6 +5482,7 @@ export default {
     $appearanceDigest.set(computeAppearanceDigest())
 
     installComposerDraftKeeper(ctx)
+    installAutoArchiveDone(ctx, prefs, invalidateAll)
 
     const syncAppearanceChanges = () => {
       const next = computeAppearanceDigest()
@@ -5464,6 +5714,33 @@ export default {
                 ]
               })
             }),
+            jsx(ToggleRow, {
+              label: 'Auto-archive done chats',
+              description:
+                'Archive chats marked as done once they have been inactive for the chosen number of days. Pinned, running, and currently open chats are never archived, and nothing is deleted — archived chats can be restored at any time.',
+              checked: currentPrefs.autoArchiveDone === true,
+              onChange: val => updatePrefs({ autoArchiveDone: val })
+            }),
+            ...(currentPrefs.autoArchiveDone === true
+              ? [
+                  jsx(ListRow, {
+                    title: 'Archive done chats after',
+                    description:
+                      'Counted from the latest of the chat’s last activity and when it was marked done.',
+                    action: jsx(SegmentedControl, {
+                      value: String(autoArchiveDoneDays(currentPrefs)),
+                      onChange: val => updatePrefs({ autoArchiveDoneDays: Number(val) }),
+                      options: [
+                        { id: '1', label: '1 day' },
+                        { id: '3', label: '3 days' },
+                        { id: '7', label: '7 days' },
+                        { id: '14', label: '14 days' },
+                        { id: '30', label: '30 days' }
+                      ]
+                    })
+                  })
+                ]
+              : []),
             jsx(ToggleRow, {
               label: 'Show auto-discovered repositories',
               description:
