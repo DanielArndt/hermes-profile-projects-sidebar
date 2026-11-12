@@ -96,6 +96,8 @@ const DEFAULT_PREFS = {
   showHomeBucket: true,
   showEmptyProfiles: true,
   showEmptyProjects: true,
+  showScheduledBucket: true,
+  hideEmptyScheduled: false,
   showPathsOnRows: true,
   showEmptyChatsPlaceholder: true,
   projectSort: 'recent', // 'recent' | 'name' | 'sessions'
@@ -1309,6 +1311,7 @@ async function fetchProfileProjectsData(gatewayState) {
         profileRow: p,
         activeId: null,
         projects: [],
+        cronJobs: [],
         explicitCount: 0,
         totalSessions: 0,
         totalTokens: 0,
@@ -1322,14 +1325,27 @@ async function fetchProfileProjectsData(gatewayState) {
   const perProfile = await Promise.all(
     sortedProfiles.map(async profileRow => {
       const key = normalizeProfile(profileRow.name)
-      const [treeRes, listRes] = await Promise.all([
+      const [treeRes, listRes, cronRes] = await Promise.all([
         host
           .request('projects.tree', { profile: key, preview_limit: 40 })
           .catch(() => null),
         host
           .request('projects.list', { profile: key })
-          .catch(() => null)
+          .catch(() => null),
+        (typeof window !== 'undefined' && window.hermesDesktop?.api
+          ? window.hermesDesktop.api({
+              profile: key,
+              path: `/api/cron/jobs?profile=${encodeURIComponent(key)}`
+            })
+          : Promise.resolve(null)
+        ).catch(() => null)
       ])
+
+      const cronJobs = Array.isArray(cronRes)
+        ? cronRes
+        : Array.isArray(cronRes?.jobs)
+          ? cronRes.jobs
+          : []
 
       const explicitById = new Map()
       if (Array.isArray(listRes?.projects)) {
@@ -1453,6 +1469,7 @@ async function fetchProfileProjectsData(gatewayState) {
         profileRow,
         activeId,
         projects: merged,
+        cronJobs,
         explicitCount,
         totalSessions,
         totalTokens,
@@ -2425,6 +2442,706 @@ function ProjectSessionRow({
   })
 }
 
+// ── Scheduled (Cron) Helpers & Rows ──────────────────────────────────────────
+
+function isJobRunning(job) {
+  if (!job) return false
+  if (job.state === 'running') return true
+  if (job.live_execution && job.live_execution.status === 'running') return true
+  if (job.latest_execution && job.latest_execution.status === 'running') return true
+  return false
+}
+
+function jobTitle(job) {
+  if (!job) return 'Scheduled Task'
+  const name = String(job.name || '').trim()
+  if (name) return name
+  const prompt = String(job.prompt || '').trim()
+  if (prompt) return prompt.length > 40 ? `${prompt.slice(0, 40)}…` : prompt
+  return String(job.id || 'Scheduled Task')
+}
+
+function formatCronNextRun(job, nowMs = Date.now()) {
+  if (!job || job.enabled === false || job.state === 'disabled') return 'disabled'
+  if (job.state === 'paused') return 'paused'
+  if (!job.next_run_at) return '—'
+  const at = Date.parse(job.next_run_at)
+  if (Number.isNaN(at)) return '—'
+  const diffMs = at - nowMs
+  if (diffMs < -15 * 60 * 1000) return 'overdue'
+  if (diffMs <= 0) return 'due'
+  const min = Math.round(diffMs / 60000)
+  if (min < 60) return `in ${min}m`
+  const hr = Math.round(min / 60)
+  if (hr < 24) return `in ${hr}h`
+  const days = Math.round(hr / 24)
+  return `in ${days}d`
+}
+
+function formatRunTime(seconds) {
+  if (!seconds || typeof seconds !== 'number') return '—'
+  const date = new Date(seconds * 1000)
+  if (Number.isNaN(date.valueOf())) return '—'
+  const now = new Date()
+  const isToday =
+    date.getDate() === now.getDate() &&
+    date.getMonth() === now.getMonth() &&
+    date.getFullYear() === now.getFullYear()
+  const timeStr = date.toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: false
+  })
+  if (isToday) return `Today ${timeStr}`
+  const monthStr = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return `${monthStr} ${timeStr}`
+}
+
+function CronJobRunRow({ run, profileKey, profileTintColor, focusedStoredId, onRefresh }) {
+  const isSelected = Boolean(focusedStoredId && run.id === focusedStoredId)
+  const isRunning = Boolean(run.is_active || run.scheduler_owned)
+  const [archivedOptimistic, setArchivedOptimistic] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  if (archivedOptimistic) return null
+
+  const timeLabel = formatRunTime(run.last_active || run.started_at)
+  const age = formatCompactAge(run.last_active || run.started_at)
+  const runTitle = String(run.title || '').trim()
+
+  const handleOpen = event => {
+    haptic('selection')
+    const inTab = Boolean(event?.metaKey || event?.ctrlKey || event?.button === 1)
+    void host.openSession(run.id, {
+      profile: profileKey,
+      intent: inTab ? 'tab' : 'in-place'
+    })
+  }
+
+  const handleDeleteRun = async () => {
+    const api = window.hermesDesktop?.api
+    if (!api) return
+    setArchivedOptimistic(true)
+    try {
+      await mutateSessionHttp(api, run.id, profileKey, 'DELETE', {})
+      host.notify?.({ durationMs: 2000, kind: 'info', message: 'Deleted run session' })
+      notifySidebarSessionsChanged()
+      onRefresh?.()
+    } catch (err) {
+      setArchivedOptimistic(false)
+      host.notifyError?.(err, 'Failed to delete run session')
+    }
+  }
+
+  const selectedStyle =
+    isSelected && profileTintColor
+      ? {
+          backgroundColor: profileColorSoft(profileTintColor, 20),
+          boxShadow: `inset 0 0 0 1px ${profileColorSoft(profileTintColor, 36)}`
+        }
+      : undefined
+
+  return jsxs('div', {
+    style: selectedStyle,
+    className: cn(
+      'group relative flex min-h-6 w-full items-center justify-between gap-1.5 rounded-md pr-1.5 pl-1 text-xs transition-colors duration-100',
+      isSelected
+        ? cn(!profileTintColor && 'bg-(--ui-control-active-background)', 'font-medium text-foreground')
+        : 'text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
+    ),
+    children: [
+      isRunning &&
+        jsx('span', {
+          'aria-hidden': 'true',
+          className: 'arc-border arc-row',
+          style: profileTintColor ? { '--arc-c1': profileTintColor } : undefined
+        }),
+      jsxs(RowButton, {
+        className: 'flex min-w-0 flex-1 items-center gap-1.5 bg-transparent py-0.5 text-left',
+        onClick: handleOpen,
+        onAuxClick: e => {
+          if (e.button === 1) {
+            e.preventDefault()
+            handleOpen(e)
+          }
+        },
+        children: [
+          typeof SessionStatusDot === 'function'
+            ? jsx(SessionStatusDot, { storedSessionId: run.id })
+            : jsx('span', {
+                'aria-hidden': 'true',
+                className: cn(
+                  'size-1.5 shrink-0 rounded-full',
+                  isRunning ? 'bg-(--ui-accent) animate-pulse' : 'bg-(--ui-text-quaternary)'
+                )
+              }),
+          jsx('span', {
+            className: 'truncate text-[0.75rem] tabular-nums leading-tight font-mono',
+            children: timeLabel
+          }),
+          runTitle &&
+            jsx('span', {
+              className: 'truncate text-[0.6875rem] text-(--ui-text-tertiary)',
+              children: `· ${runTitle}`
+            })
+        ]
+      }),
+      jsxs('div', {
+        className: 'flex shrink-0 items-center gap-0.5',
+        children: [
+          age &&
+            jsx('span', {
+              className: 'text-[0.625rem] tabular-nums text-(--ui-text-quaternary) group-hover:hidden',
+              children: age
+            }),
+          jsx(ContextMenu, {
+            children: [
+              jsx(
+                ContextMenuTrigger,
+                {
+                  asChild: true,
+                  children: jsx(Button, {
+                    'aria-label': 'Run actions',
+                    size: 'icon-xs',
+                    variant: 'ghost',
+                    className:
+                      'size-5 shrink-0 rounded-[4px] text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground hidden group-hover:inline-flex',
+                    onClick: e => e.stopPropagation(),
+                    children: jsx(Codicon, { name: 'ellipsis', size: '0.75rem' })
+                  })
+                },
+                'trigger'
+              ),
+              jsxs(
+                ContextMenuContent,
+                {
+                  align: 'end',
+                  className: 'min-w-40',
+                  children: [
+                    jsx(ContextMenuItem, {
+                      onSelect: () => handleOpen({}),
+                      children: jsxs('span', {
+                        className: 'flex items-center gap-2',
+                        children: [
+                          jsx(Codicon, { name: 'comment', size: '0.8rem' }),
+                          jsx('span', { children: 'Open run chat' })
+                        ]
+                      })
+                    }),
+                    jsx(ContextMenuItem, {
+                      onSelect: () => handleOpen({ metaKey: true }),
+                      children: jsxs('span', {
+                        className: 'flex items-center gap-2',
+                        children: [
+                          jsx(Codicon, { name: 'split-horizontal', size: '0.8rem' }),
+                          jsx('span', { children: 'Open in new tab' })
+                        ]
+                      })
+                    }),
+                    jsx(ContextMenuSeparator, {}),
+                    jsx(ContextMenuItem, {
+                      onSelect: () => setConfirmDelete(true),
+                      className: 'text-red-500 hover:text-red-600',
+                      children: jsxs('span', {
+                        className: 'flex items-center gap-2',
+                        children: [
+                          jsx(Codicon, { name: 'trash', size: '0.8rem' }),
+                          jsx('span', { children: 'Delete run session…' })
+                        ]
+                      })
+                    })
+                  ]
+                },
+                'content'
+              )
+            ]
+          })
+        ]
+      }),
+      confirmDelete &&
+        typeof ConfirmDialog === 'function' &&
+        jsx(
+          ConfirmDialog,
+          {
+            open: true,
+            onOpenChange: setConfirmDelete,
+            title: `Delete run session?`,
+            description: 'This permanently deletes this scheduled run session.',
+            confirmLabel: 'Delete',
+            destructive: true,
+            dismissOnConfirm: true,
+            onConfirm: () => handleDeleteRun()
+          },
+          'delete-run-dialog'
+        )
+    ]
+  })
+}
+
+function CronJobRunsPeek({
+  jobId,
+  profileKey,
+  profileTintColor,
+  focusedStoredId,
+  triggerTick,
+  onRefresh
+}) {
+  const [runs, setRuns] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  const fetchRuns = async () => {
+    try {
+      const api = window.hermesDesktop?.api
+      if (!api) {
+        setRuns([])
+        setLoading(false)
+        return
+      }
+      const res = await api({
+        profile: profileKey,
+        path: `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=5&profile=${encodeURIComponent(profileKey)}`
+      })
+      const runsList = Array.isArray(res) ? res : Array.isArray(res?.runs) ? res.runs : []
+      setRuns(runsList)
+    } catch {
+      setRuns([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void fetchRuns()
+
+    let ch = null
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        ch = new BroadcastChannel('hermes:sessions')
+        ch.addEventListener('message', () => void fetchRuns())
+      }
+    } catch {
+      // Ignore
+    }
+
+    // Poll every 3 seconds while peek is open so newly triggered or running tasks update live
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void fetchRuns()
+      }
+    }, 3000)
+
+    return () => {
+      window.clearInterval(interval)
+      try {
+        ch?.close?.()
+      } catch {
+        // Ignore
+      }
+    }
+  }, [jobId, profileKey, triggerTick])
+
+  if (loading && runs === null) {
+    return jsx('div', {
+      className: 'flex items-center gap-1.5 py-1 pl-4 text-[0.6875rem] text-(--ui-text-tertiary)',
+      children: [
+        jsx(GlyphSpinner, { className: 'text-[0.75rem]' }),
+        jsx('span', { children: 'Loading runs…' })
+      ]
+    })
+  }
+
+  if (!runs || runs.length === 0) {
+    return jsx('div', {
+      className: 'py-1 pl-4 text-[0.6875rem] text-(--ui-text-tertiary)',
+      children: 'No runs recorded yet'
+    })
+  }
+
+  return jsxs('div', {
+    className: 'mb-0.5 ml-3 flex flex-col gap-0.5 border-l border-(--ui-stroke-tertiary) pl-1 pt-0.5',
+    style: profileTintColor ? { borderColor: profileColorSoft(profileTintColor, 20) } : undefined,
+    children: runs.map(run =>
+      jsx(
+        CronJobRunRow,
+        {
+          run,
+          profileKey,
+          profileTintColor,
+          focusedStoredId,
+          onRefresh: () => {
+            void fetchRuns()
+            onRefresh?.()
+          }
+        },
+        run.id
+      )
+    )
+  })
+}
+
+function ProfileCronJobRow({
+  job,
+  profileKey,
+  profileTintColor,
+  profileGuideColor,
+  focusedStoredId,
+  searchQuery,
+  onRefresh,
+  nowMs
+}) {
+  const running = isJobRunning(job)
+  const [isPeekOpen, setIsPeekOpen] = useState(Boolean(searchQuery) || running)
+  const [busy, setBusy] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [triggerTick, setTriggerTick] = useState(0)
+
+  const title = jobTitle(job)
+  const isPaused = job.state === 'paused'
+  const isError = Boolean(job.last_error)
+  const nextInfo = formatCronNextRun(job, nowMs)
+
+  const handleTrigger = async e => {
+    e?.stopPropagation?.()
+    if (busy) return
+    setBusy(true)
+    haptic('tap')
+    try {
+      const api = window.hermesDesktop?.api
+      if (api) {
+        await api({
+          profile: profileKey,
+          path: `/api/cron/jobs/${encodeURIComponent(job.id)}/trigger?profile=${encodeURIComponent(profileKey)}`,
+          method: 'POST'
+        })
+        host.notify?.({ durationMs: 2500, kind: 'info', message: `Triggered "${title}"` })
+        setIsPeekOpen(true)
+        setTriggerTick(prev => prev + 1)
+        setTimeout(() => setTriggerTick(prev => prev + 1), 600)
+        setTimeout(() => setTriggerTick(prev => prev + 1), 1600)
+        setTimeout(() => setTriggerTick(prev => prev + 1), 3200)
+        onRefresh?.()
+      }
+    } catch (err) {
+      host.notifyError?.(err, `Failed to trigger "${title}"`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleTogglePause = async () => {
+    haptic('selection')
+    const endpoint = isPaused ? 'resume' : 'pause'
+    try {
+      const api = window.hermesDesktop?.api
+      if (api) {
+        await api({
+          profile: profileKey,
+          path: `/api/cron/jobs/${encodeURIComponent(job.id)}/${endpoint}?profile=${encodeURIComponent(profileKey)}`,
+          method: 'POST'
+        })
+        host.notify?.({ durationMs: 2000, kind: 'info', message: `${isPaused ? 'Resumed' : 'Paused'} "${title}"` })
+        onRefresh?.()
+      }
+    } catch (err) {
+      host.notifyError?.(err, `Failed to ${endpoint} "${title}"`)
+    }
+  }
+
+  const handleDeleteJob = async () => {
+    try {
+      const api = window.hermesDesktop?.api
+      if (api) {
+        await api({
+          profile: profileKey,
+          path: `/api/cron/jobs/${encodeURIComponent(job.id)}?profile=${encodeURIComponent(profileKey)}`,
+          method: 'DELETE'
+        })
+        host.notify?.({ durationMs: 2000, kind: 'info', message: `Deleted "${title}"` })
+        onRefresh?.()
+      }
+    } catch (err) {
+      host.notifyError?.(err, `Failed to delete "${title}"`)
+    }
+  }
+
+  const jobRow = jsxs('div', {
+    className: cn(
+      'group relative flex min-h-6 w-full items-center justify-between gap-1 rounded-md pr-1.5 pl-1 text-xs transition-colors duration-100',
+      'text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
+    ),
+    children: [
+      jsxs(RowButton, {
+        'aria-expanded': isPeekOpen,
+        className: 'flex min-w-0 flex-1 items-center gap-1.5 bg-transparent py-0.5 text-left',
+        onClick: () => {
+          haptic('tap')
+          setIsPeekOpen(prev => !prev)
+        },
+        children: [
+          jsx('span', {
+            'aria-hidden': 'true',
+            className: cn(
+              'size-1.5 shrink-0 rounded-full',
+              running
+                ? 'bg-(--ui-accent) animate-pulse'
+                : isError
+                  ? 'bg-destructive'
+                  : isPaused || job.enabled === false
+                    ? 'bg-(--ui-text-quaternary)'
+                    : 'bg-primary'
+            )
+          }),
+          jsx('span', {
+            className: 'truncate text-[0.8125rem] font-medium leading-tight text-foreground',
+            children: title
+          }),
+          jsx(DisclosureCaret, {
+            className: cn(
+              'shrink-0 text-(--ui-text-tertiary) transition',
+              isPeekOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+            ),
+            open: isPeekOpen
+          })
+        ]
+      }),
+      jsxs('div', {
+        className: 'flex shrink-0 items-center gap-0.5',
+        children: [
+          jsx('span', {
+            className: 'text-[0.625rem] tabular-nums text-(--ui-text-quaternary) group-hover:hidden',
+            children: nextInfo
+          }),
+          jsx(Tip, {
+            label: `Trigger "${title}" now`,
+            side: 'top',
+            children: jsx(Button, {
+              'aria-label': `Trigger ${title} now`,
+              size: 'icon-xs',
+              variant: 'ghost',
+              className:
+                'size-5 shrink-0 rounded-[4px] text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground hidden group-hover:inline-flex',
+              disabled: busy,
+              onClick: handleTrigger,
+              children: busy
+                ? jsx(GlyphSpinner, { className: 'text-[0.7rem]' })
+                : jsx(Codicon, { name: 'zap', size: '0.75rem' })
+            })
+          })
+        ]
+      })
+    ]
+  })
+
+  return jsxs('div', {
+    className: 'flex flex-col',
+    children: [
+      jsx(ContextMenu, {
+        children: [
+          jsx(ContextMenuTrigger, { asChild: true, children: jobRow }, 'trigger'),
+          jsxs(
+            ContextMenuContent,
+            {
+              align: 'start',
+              className: 'min-w-44',
+              children: [
+                jsx(ContextMenuItem, {
+                  onSelect: () => void handleTrigger(),
+                  children: jsxs('span', {
+                    className: 'flex items-center gap-2',
+                    children: [
+                      jsx(Codicon, { name: 'zap', size: '0.8rem' }),
+                      jsx('span', { children: 'Trigger now' })
+                    ]
+                  })
+                }),
+                jsx(ContextMenuItem, {
+                  onSelect: () => void handleTogglePause(),
+                  children: jsxs('span', {
+                    className: 'flex items-center gap-2',
+                    children: [
+                      jsx(Codicon, { name: isPaused ? 'play' : 'debug-pause', size: '0.8rem' }),
+                      jsx('span', { children: isPaused ? 'Resume schedule' : 'Pause schedule' })
+                    ]
+                  })
+                }),
+                jsx(ContextMenuSeparator, {}),
+                jsx(ContextMenuItem, {
+                  onSelect: () => setConfirmDelete(true),
+                  className: 'text-red-500 hover:text-red-600',
+                  children: jsxs('span', {
+                    className: 'flex items-center gap-2',
+                    children: [
+                      jsx(Codicon, { name: 'trash', size: '0.8rem' }),
+                      jsx('span', { children: 'Delete scheduled job…' })
+                    ]
+                  })
+                })
+              ]
+            },
+            'content'
+          )
+        ]
+      }),
+      isPeekOpen &&
+        jsx(CronJobRunsPeek, {
+          jobId: job.id,
+          profileKey,
+          profileTintColor,
+          focusedStoredId,
+          triggerTick,
+          onRefresh
+        }),
+      confirmDelete &&
+        typeof ConfirmDialog === 'function' &&
+        jsx(
+          ConfirmDialog,
+          {
+            open: true,
+            onOpenChange: setConfirmDelete,
+            title: `Delete scheduled job "${title}"?`,
+            description: 'This permanently removes this scheduled job.',
+            confirmLabel: 'Delete',
+            destructive: true,
+            dismissOnConfirm: true,
+            onConfirm: () => handleDeleteJob()
+          },
+          'delete-job-dialog'
+        )
+    ]
+  })
+}
+
+function ProfileScheduledBucket({
+  profileKey,
+  displayName,
+  cronJobs,
+  isOpen,
+  onToggleOpen,
+  profileTintColor,
+  profileGuideColor,
+  focusedStoredId,
+  searchQuery,
+  onRefresh
+}) {
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!isOpen) return
+    const timer = window.setInterval(() => setNowMs(Date.now()), 15000)
+    return () => window.clearInterval(timer)
+  }, [isOpen])
+
+  const filteredJobs = useMemo(() => {
+    if (!searchQuery) return cronJobs
+    const q = searchQuery.toLowerCase()
+    return (cronJobs || []).filter(job => {
+      const name = (job.name || '').toLowerCase()
+      const prompt = (job.prompt || '').toLowerCase()
+      const id = (job.id || '').toLowerCase()
+      return name.includes(q) || prompt.includes(q) || id.includes(q)
+    })
+  }, [cronJobs, searchQuery])
+
+  const hasRunning = useMemo(() => {
+    return (cronJobs || []).some(isJobRunning)
+  }, [cronJobs])
+
+  const count = filteredJobs.length
+
+  const bucketHeader = jsxs('div', {
+    className: cn(
+      'group relative flex min-h-6.5 w-full items-center justify-between gap-1 rounded-md px-1 py-0.5 text-xs transition-colors duration-100',
+      'text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
+    ),
+    children: [
+      jsxs(RowButton, {
+        'aria-expanded': isOpen,
+        className: 'flex min-w-0 flex-1 items-center gap-1.5 bg-transparent py-0.5 text-left',
+        onClick: () => {
+          haptic('tap')
+          onToggleOpen()
+        },
+        children: [
+          jsx(Codicon, {
+            name: 'history',
+            size: '0.8125rem',
+            className: 'shrink-0 text-(--ui-text-tertiary)'
+          }),
+          jsx('span', {
+            className: 'truncate text-[0.8125rem] font-medium leading-tight',
+            children: 'Scheduled'
+          }),
+          hasRunning &&
+            jsx('span', {
+              'aria-hidden': 'true',
+              className: 'size-1.5 shrink-0 rounded-full bg-(--ui-accent) animate-pulse',
+              title: 'Scheduled task running'
+            }),
+          jsx(DisclosureCaret, {
+            className: 'shrink-0 text-(--ui-text-tertiary) opacity-60 transition group-hover:opacity-100',
+            open: isOpen
+          })
+        ]
+      }),
+      jsxs('div', {
+        className: 'flex shrink-0 items-center gap-0.5',
+        children: [
+          count > 0 &&
+            jsx('span', {
+              className:
+                'min-w-3.5 pr-0.5 text-right text-[0.625rem] tabular-nums text-(--ui-text-quaternary)',
+              title: `${count} scheduled task${count === 1 ? '' : 's'}`,
+              children: `${count}j`
+            })
+        ]
+      })
+    ]
+  })
+
+  return jsxs('div', {
+    className: 'flex flex-col',
+    children: [
+      bucketHeader,
+      isOpen &&
+        jsxs('div', {
+          className:
+            'ml-2 flex flex-col gap-0.5 border-l border-(--ui-stroke-tertiary) pl-1 pt-0.5',
+          style: profileGuideColor ? { borderColor: profileGuideColor } : undefined,
+          children:
+            count > 0
+              ? filteredJobs.map(job =>
+                  jsx(
+                    ProfileCronJobRow,
+                    {
+                      job,
+                      profileKey,
+                      profileTintColor,
+                      profileGuideColor,
+                      focusedStoredId,
+                      searchQuery,
+                      onRefresh,
+                      nowMs
+                    },
+                    job.id
+                  )
+                )
+              : [
+                  jsx(
+                    'div',
+                    {
+                      className: 'py-1 pl-2 text-[0.6875rem] text-(--ui-text-tertiary)',
+                      children: searchQuery
+                        ? 'No matching scheduled tasks'
+                        : 'No scheduled tasks'
+                    },
+                    'empty-cron'
+                  )
+                ]
+        })
+    ]
+  })
+}
+
 // ── Project Row inside a Profile ─────────────────────────────────────────────
 
 function ProfileProjectRow({
@@ -2977,6 +3694,8 @@ function ProfileProjectsSection({
   onToggleOpen,
   isProjectOpen,
   onToggleProjectOpen,
+  isScheduledOpen,
+  onToggleScheduledOpen,
   onSetAllProjectsInProfile,
   activeProfileKey,
   rawCwd,
@@ -3330,6 +4049,37 @@ function ProfileProjectsSection({
     'bot-chat'
   )
 
+  const cronJobs = profGroup?.cronJobs || []
+  const showScheduled = prefs.showScheduledBucket !== false
+  const hideWhenEmpty = prefs.hideEmptyScheduled === true
+  const shouldRenderScheduled =
+    showScheduled &&
+    (cronJobs.length > 0 || (!hideWhenEmpty && !searchQuery))
+
+  const isSchedOpen =
+    Boolean(searchQuery) ||
+    (typeof isScheduledOpen === 'function' ? isScheduledOpen(profileKey) : false)
+
+  const scheduledBucketRow = shouldRenderScheduled
+    ? jsx(
+        ProfileScheduledBucket,
+        {
+          profileKey,
+          displayName,
+          cronJobs,
+          isOpen: isSchedOpen,
+          onToggleOpen: () => onToggleScheduledOpen?.(profileKey),
+          profileTintColor: tintColor,
+          profileGuideColor:
+            tintConfig && tintColor ? profileColorSoft(tintColor, tintConfig.guide) : undefined,
+          focusedStoredId,
+          searchQuery,
+          onRefresh
+        },
+        'scheduled-bucket'
+      )
+    : null
+
   return jsxs('div', {
     className: cn(
       'flex flex-col transition-colors duration-150',
@@ -3477,6 +4227,7 @@ function ProfileProjectsSection({
               : undefined,
           children: [
             botChatRow,
+            scheduledBucketRow,
             ...(sortedProjects.length > 0
               ? sortedProjects.map(project => {
                   const projOpen = Boolean(searchQuery) || isProjectOpen(profileKey, project)
@@ -3565,6 +4316,9 @@ function ProfileProjectsPane({ prefsAtom, updatePrefs, storage, os }) {
   const [projectOpenMap, setProjectOpenMap] = useState(() =>
     storage.get('projectOpenMap', {})
   )
+  const [scheduledOpenMap, setScheduledOpenMap] = useState(() =>
+    storage.get('scheduledOpenMap', {})
+  )
 
   useEffect(() => {
     if (externalDialogReq) {
@@ -3584,6 +4338,21 @@ function ProfileProjectsPane({ prefsAtom, updatePrefs, storage, os }) {
       const current = profileKey in prev ? Boolean(prev[profileKey]) : true
       const next = { ...prev, [profileKey]: !current }
       storage.set('profileOpenMap', next)
+      return next
+    })
+  }
+
+  const isScheduledOpen = profileKey => {
+    if (profileKey in scheduledOpenMap) return Boolean(scheduledOpenMap[profileKey])
+    const prof = (profileGroups || []).find(p => p.key === profileKey)
+    return Boolean((prof?.cronJobs?.length || 0) > 0)
+  }
+
+  const toggleScheduledOpen = profileKey => {
+    setScheduledOpenMap(prev => {
+      const current = isScheduledOpen(profileKey)
+      const next = { ...prev, [profileKey]: !current }
+      storage.set('scheduledOpenMap', next)
       return next
     })
   }
@@ -3640,7 +4409,7 @@ function ProfileProjectsPane({ prefsAtom, updatePrefs, storage, os }) {
         ) {
           return true
         }
-        return projects.some(proj => {
+        const matchedProj = projects.some(proj => {
           const rootPath = projectRootCwd(proj)
           const fmtPath = rootPath ? displayPath(rootPath) : ''
           if (
@@ -3664,6 +4433,28 @@ function ProfileProjectsPane({ prefsAtom, updatePrefs, storage, os }) {
                 .includes(q)
           )
         })
+
+        if (matchedProj) return true
+
+        if (
+          Array.isArray(group.cronJobs) &&
+          group.cronJobs.some(
+            job =>
+              String(job.name || '')
+                .toLowerCase()
+                .includes(q) ||
+              String(job.prompt || '')
+                .toLowerCase()
+                .includes(q) ||
+              String(job.id || '')
+                .toLowerCase()
+                .includes(q)
+          )
+        ) {
+          return true
+        }
+
+        return matchedProj
       }
 
       if (prefs.showEmptyProfiles === false && projects.length === 0) {
@@ -4209,6 +5000,8 @@ function ProfileProjectsPane({ prefsAtom, updatePrefs, storage, os }) {
                         onToggleOpen: () => toggleProfileOpen(profGroup.key),
                         isProjectOpen,
                         onToggleProjectOpen: toggleProjectOpen,
+                        isScheduledOpen,
+                        onToggleScheduledOpen: toggleScheduledOpen,
                         onSetAllProjectsInProfile: setAllProjectsInProfile,
                         activeProfileKey,
                         rawCwd,
@@ -4372,6 +5165,7 @@ export default {
       invalidateAll()
     })
     ctx.onEvent('sessions.changed', invalidateAll)
+    ctx.onEvent('cron.changed', invalidateAll)
     ctx.onEvent('session.created', ev => {
       invalidateAll()
       const pending = $pendingDraftTarget.get()
@@ -4572,6 +5366,20 @@ export default {
                 'Include each profile’s Home bucket for chats started outside a project workspace.',
               checked: currentPrefs.showHomeBucket !== false,
               onChange: val => updatePrefs({ showHomeBucket: val })
+            }),
+            jsx(ToggleRow, {
+              label: 'Show Scheduled (cron) bucket',
+              description:
+                'Display scheduled cron jobs and recent execution runs under each profile.',
+              checked: currentPrefs.showScheduledBucket !== false,
+              onChange: val => updatePrefs({ showScheduledBucket: val })
+            }),
+            jsx(ToggleRow, {
+              label: 'Hide Scheduled bucket when empty',
+              description:
+                'Do not display the Scheduled section in profiles that have zero scheduled (cron) tasks.',
+              checked: currentPrefs.hideEmptyScheduled === true,
+              onChange: val => updatePrefs({ hideEmptyScheduled: val })
             }),
             jsx(ToggleRow, {
               label: 'Show empty explicit projects',
