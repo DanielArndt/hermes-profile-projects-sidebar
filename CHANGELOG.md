@@ -9,6 +9,7 @@
 - Add setting preference to hide the Scheduled bucket in profiles that have zero scheduled tasks (`hideEmptyScheduled`).
 - Add unit test suite (`tests/scheduled-cron.test.mjs`) covering job title derivation, running state detection, next-run countdown formatting, and execution timestamp rendering.
 
+- Add a **Rename session…** action to each session's right-click menu, with a rename dialog and profile-scoped, mutation-fenced title updates.
 - Keep quiet-but-running (`stalled`) sessions filled yellow and retain their animated row glow instead of treating silence as inactivity.
 - Add regression coverage for the stalled glow and fill; verified all five Node tests, ESM syntax, and computed status-dot colors/masks in Chromium.
 

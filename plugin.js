@@ -826,7 +826,7 @@ async function openProfileBotChat(profileKey, profileRow, { openTab = false } = 
   return createPromise
 }
 
-// Session writes (archive/delete) are fenced upstream: read the session's
+// Session writes (rename/archive/delete) are fenced upstream: read the session's
 // mutation snapshot, then send request_id + expected_revision (+ generation)
 // with the write. Older backends without the snapshot route get the plain write.
 async function mutateSessionHttp(api, sessionId, owner, method, payload) {
@@ -2109,6 +2109,18 @@ function ProjectSessionRow({
   }
 
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameValue, setRenameValue] = useState(title)
+  const [renaming, setRenaming] = useState(false)
+  const renameInputRef = useRef(null)
+  const suppressCloseFocusRef = useRef(false)
+
+  useEffect(() => {
+    if (!renameOpen) return undefined
+    setRenameValue(title)
+    const timer = window.setTimeout(() => renameInputRef.current?.select(), 0)
+    return () => window.clearTimeout(timer)
+  }, [renameOpen, title])
 
   const handleDeleteSession = async () => {
     const targetId = session.id
@@ -2124,6 +2136,31 @@ function ProjectSessionRow({
     notifySidebarSessionsChanged()
     onRefresh?.()
     host.notify({ durationMs: 2_000, kind: 'success', message: 'Chat deleted' })
+  }
+
+  const handleRenameSession = async () => {
+    const nextTitle = renameValue.trim()
+    if (renaming) return
+    if (nextTitle === title.trim()) {
+      setRenameOpen(false)
+      return
+    }
+
+    setRenaming(true)
+    try {
+      const owner = profileKey && profileKey !== 'default' ? profileKey : null
+      const api = window.hermesDesktop?.api
+      if (!api) throw new Error('Desktop API unavailable')
+      await mutateSessionHttp(api, session.id, owner, 'PATCH', { title: nextTitle })
+      notifySidebarSessionsChanged()
+      onRefresh?.()
+      host.notify({ durationMs: 2_000, kind: 'success', message: 'Chat renamed' })
+      setRenameOpen(false)
+    } catch (err) {
+      host.notifyError?.(err, 'Failed to rename chat')
+    } finally {
+      setRenaming(false)
+    }
   }
 
   const sessionWithColor = useMemo(
@@ -2319,6 +2356,12 @@ function ProjectSessionRow({
         ContextMenuContent,
         {
           className: 'min-w-48',
+          onCloseAutoFocus: event => {
+            if (suppressCloseFocusRef.current) {
+              suppressCloseFocusRef.current = false
+              event.preventDefault()
+            }
+          },
           children: [
             jsx(ContextMenuItem, {
               onSelect: () => handleOpen({}),
@@ -2340,6 +2383,21 @@ function ProjectSessionRow({
                 ]
               })
             }),
+            !isCanonicalBotChatRow(session) &&
+              jsx(ContextMenuItem, {
+                onSelect: () => {
+                  haptic('selection')
+                  suppressCloseFocusRef.current = true
+                  setRenameOpen(true)
+                },
+                children: jsxs('span', {
+                  className: 'flex items-center gap-2',
+                  children: [
+                    jsx(Codicon, { name: 'edit', size: '0.8rem' }),
+                    jsx('span', { children: 'Rename session…' })
+                  ]
+                })
+              }),
             jsx(ContextMenuItem, {
               onSelect: () => {
                 const pinId = session._lineage_root_id || session.id
@@ -2437,6 +2495,59 @@ function ProjectSessionRow({
             onConfirm: () => handleDeleteSession()
           },
           'delete-dialog'
+        ),
+      !isCanonicalBotChatRow(session) &&
+        jsx(
+          Dialog,
+          {
+            open: renameOpen,
+            onOpenChange: setRenameOpen,
+            children: jsx(DialogContent, {
+              className: 'sm:max-w-md',
+              children: jsxs('form', {
+                onSubmit: event => {
+                  event.preventDefault()
+                  void handleRenameSession()
+                },
+                className: 'flex flex-col gap-4',
+                children: [
+                  jsxs(DialogHeader, {
+                    children: [
+                      jsx(DialogTitle, { children: 'Rename session' }),
+                      jsx(DialogDescription, {
+                        children: 'Leave empty to clear the custom title.'
+                      })
+                    ]
+                  }),
+                  jsx(Input, {
+                    autoFocus: true,
+                    disabled: renaming,
+                    onChange: event => setRenameValue(event.target.value),
+                    placeholder: 'Untitled chat',
+                    ref: renameInputRef,
+                    value: renameValue
+                  }),
+                  jsxs(DialogFooter, {
+                    children: [
+                      jsx(Button, {
+                        type: 'button',
+                        variant: 'ghost',
+                        disabled: renaming,
+                        onClick: () => setRenameOpen(false),
+                        children: 'Cancel'
+                      }),
+                      jsx(Button, {
+                        type: 'submit',
+                        disabled: renaming,
+                        children: renaming ? 'Saving…' : 'Save'
+                      })
+                    ]
+                  })
+                ]
+              })
+            })
+          },
+          'rename-dialog'
         )
     ]
   })
