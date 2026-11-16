@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add **Open In VS Code** to project `…` and right-click menus for projects with a folder. Launch through a short-lived Desktop terminal so it also works without an open chat, safely quotes folder paths, and reports launcher failures.
+
 - Add opt-in **Auto-archive done chats** setting: a periodic sweep archives only sessions marked as done once they have been idle for a configurable number of days (1/3/7/14/30, default 3), measured from the later of last activity and the done marker.
 - Skip pinned, running, scheduled-owned, currently focused, and canonical Bot Chat sessions; archive through the existing profile-scoped, mutation-fenced session PATCH so nothing is deleted.
 - Record when each chat was marked done and whether the sweep already archived it, so restored chats are not re-archived until re-marked done, and re-marking re-arms the sweep.

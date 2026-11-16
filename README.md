@@ -13,7 +13,7 @@ A Hermes Desktop UI plugin that adds a dedicated **Projects** view tab (`SESSION
 - **Session Rows:** Live glowing working rectangle (`arc-border arc-row`) when a session is active, including while sub-agents or background terminal jobs continue after the parent turn ends. Active work shows a filled yellow status dot, including quiet-but-running turns and background work. Includes a persistent archive/unarchive button and context menu actions to rename, open in new tab, move between projects (including back to Home), or delete.
 - **Auto-Archive Done Chats:** Optional sweep that archives chats you marked as **done** once they have been inactive for a configurable number of days (default 3), counted from the later of the chat's last activity and when you marked it done. Pinned, running, and currently open chats are never archived, and nothing is deleted. A chat that was auto-archived and then restored is left alone until you mark it done again.
 - **Draft Retention:** Unsent text in a new chat is saved per `(Profile, Project)` and restored the next time you open a new chat for that pair. Each saved draft also shows as a `Draft` row at the top of its project (click to resume, `×` to discard); sending the message clears it.
-- **Project Management:** Create, edit, delete, or transfer projects between profiles directly from the sidebar.
+- **Project Management:** Create, edit, delete, or transfer projects between profiles directly from the sidebar. Open a project's folder in VS Code from its `…` or right-click menu (requires the `code` CLI).
 
 ## Installation
 

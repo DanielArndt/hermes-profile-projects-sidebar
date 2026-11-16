@@ -613,6 +613,54 @@ function projectRootCwd(project) {
   return ''
 }
 
+// Use a short-lived Desktop PTY so folder actions do not depend on an open
+// chat, and the VS Code CLI inherits the desktop's display/keyring environment.
+async function openProjectInVSCode(target, profileKey) {
+  if (!target) return
+  const terminal = window?.hermesDesktop?.terminal
+  if (!terminal || ['start', 'attach', 'onExit', 'write', 'dispose'].some(
+    method => typeof terminal[method] !== 'function'
+  )) {
+    throw new Error('VS Code launcher requires Hermes Desktop terminal support')
+  }
+  const session = await terminal.start({
+    connectionId: host.state.connectionId?.get?.() || null,
+    cwd: target,
+    profile: profileKey
+  })
+  if (!session?.id) throw new Error('Unable to start a terminal for VS Code')
+
+  let timer
+  let unsubscribe = () => {}
+  try {
+    const exited = new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('Timed out opening VS Code')), 15_000)
+      unsubscribe = terminal.onExit(session.id, resolve)
+    })
+    if (!(await terminal.attach(session.id))) {
+      throw new Error('Unable to attach to the VS Code launcher terminal')
+    }
+    const quote = value => `'${String(value).replace(/'/g, `'\\''`)}'`
+    // Keep the CLI in the foreground until it hands off; an exiting PTY kills
+    // background children. Prefer native Wayland when Desktop uses it.
+    const command = `set -- ${quote(target)}\nflags=""\n[ -n "$WAYLAND_DISPLAY" ] && flags="--ozone-platform=wayland"\ncode $flags -- "$1"`
+    if (!(await terminal.write(session.id, `exec /bin/sh -c ${quote(command)}\n`))) {
+      throw new Error('Unable to write to the VS Code launcher terminal')
+    }
+    const result = await exited
+    if (result?.code && result.code !== '0') {
+      throw new Error(`VS Code launcher exited with code ${result.code}`)
+    }
+    if (result?.signal && result.signal !== '0') {
+      throw new Error(`VS Code launcher stopped by signal ${result.signal}`)
+    }
+  } finally {
+    clearTimeout(timer)
+    if (typeof unsubscribe === 'function') unsubscribe()
+    await Promise.resolve(terminal.dispose(session.id)).catch(() => null)
+  }
+}
+
 function collectProjectPaths(project) {
   if (!project || project.isNoProject) return []
   const paths = []
@@ -3630,6 +3678,14 @@ function ProfileProjectRow({
     })
   }
 
+  const handleOpenInVSCode = async () => {
+    try {
+      await openProjectInVSCode(rootPath, profileKey)
+    } catch (err) {
+      host.notifyError?.(err, 'Failed to open project in VS Code')
+    }
+  }
+
   const renderMenuItems = MenuItemComponent =>
     [
       jsx(
@@ -3707,6 +3763,21 @@ function ProfileProjectRow({
             })
           },
           'copy-path'
+        ),
+      rootPath &&
+        jsx(
+          MenuItemComponent,
+          {
+            onSelect: handleOpenInVSCode,
+            children: jsxs('span', {
+              className: 'flex items-center gap-2',
+              children: [
+                jsx(Codicon, { name: 'code', size: '0.8rem' }),
+                jsx('span', { children: 'Open In VS Code' })
+              ]
+            })
+          },
+          'open-vscode'
         ),
       rootPath &&
         jsx(
