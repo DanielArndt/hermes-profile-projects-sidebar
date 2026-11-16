@@ -2266,6 +2266,52 @@ function ProjectDraftRow({ draft, draftKey, profileTintColor, onOpen }) {
   })
 }
 
+// The SDK owns live state (including unread clearing on focus). Observe only
+// the dot inside our own row; its class names encode the host's resolved state.
+function useSessionDotState(sessionId) {
+  const dotWrapRef = useRef(null)
+  const [dotState, setDotState] = useState('idle')
+
+  useEffect(() => {
+    const el = dotWrapRef.current
+    if (!el || typeof MutationObserver === 'undefined') return undefined
+
+    const sync = () => {
+      const statusSpan = el.querySelector('[role="status"]')
+      if (!statusSpan) {
+        setDotState('idle')
+        return
+      }
+      const cls = String(statusSpan.className || '')
+      if (cls.includes('bg-amber-500')) {
+        setDotState('needs-input')
+      } else if (cls.includes('border-(--ui-accent)')) {
+        setDotState('stalled')
+      } else if (cls.includes('bg-(--ui-accent)')) {
+        setDotState('working')
+      } else if (cls.includes('border-(--ui-text-tertiary)')) {
+        setDotState('background')
+      } else if (cls.includes('bg-(--ui-success)')) {
+        setDotState('unread')
+      } else {
+        setDotState('idle')
+      }
+    }
+
+    sync()
+    const obs = new MutationObserver(sync)
+    obs.observe(el, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'role']
+    })
+    return () => obs.disconnect()
+  }, [sessionId])
+
+  return { dotWrapRef, dotState }
+}
+
 function ProjectSessionRow({
   session,
   profileKey,
@@ -2465,55 +2511,19 @@ function ProjectSessionRow({
     [session, projectColor]
   )
 
-  const dotWrapRef = useRef(null)
-  const [dotState, setDotState] = useState('idle')
+  const { dotWrapRef, dotState } = useSessionDotState(session.id)
   const isBusy = useValue(host.state.busy)
 
-  useEffect(() => {
-    const el = dotWrapRef.current
-    if (!el || typeof MutationObserver === 'undefined') return undefined
-
-    const sync = () => {
-      const statusSpan = el.querySelector('[role="status"]')
-      if (!statusSpan) {
-        setDotState('idle')
-        return
-      }
-      const cls = String(statusSpan.className || '')
-      if (cls.includes('bg-amber-500')) {
-        setDotState('needs-input')
-      } else if (cls.includes('border-(--ui-accent)')) {
-        setDotState('stalled')
-      } else if (cls.includes('bg-(--ui-accent)')) {
-        setDotState('working')
-      } else if (cls.includes('border-(--ui-text-tertiary)')) {
-        setDotState('background')
-      } else {
-        setDotState('idle')
-      }
-    }
-
-    sync()
-    const obs = new MutationObserver(sync)
-    obs.observe(el, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['class', 'role']
-    })
-    return () => obs.disconnect()
-  }, [session.id])
-
-  // Async delegation ends the parent turn while its children keep working.
-  // The host groups this with background processes; both still need an arc.
-  const showsArc =
+  // The arc is an action cue, not a running indicator. Keep live-turn styling
+  // independent so done markers still cannot mask work or pending input.
+  const showsArc = dotState === 'unread' || dotState === 'needs-input'
+  const liveTurn =
     dotState === 'working' ||
     dotState === 'stalled' ||
     dotState === 'background' ||
+    dotState === 'needs-input' ||
     Boolean(session.running) ||
     Boolean(isSelected && isBusy)
-  const liveTurn =
-    showsArc || dotState === 'needs-input' || dotState === 'stalled'
 
   const selectedStyle =
     isSelected && profileTintColor
@@ -2545,7 +2555,7 @@ function ProjectSessionRow({
         jsx('span', {
           'aria-hidden': 'true',
           className: 'arc-border arc-row',
-          style: profileTintColor ? { '--arc-c1': profileTintColor } : undefined
+          style: { '--arc-c1': dotState === 'needs-input' ? '#ef4444' : 'var(--ui-success)' }
         }),
       jsxs(RowButton, {
         className: 'flex min-w-0 flex-1 items-center gap-1.5 bg-transparent py-1 text-left',
@@ -2910,6 +2920,8 @@ function CronJobRunRow({ run, profileKey, profileTintColor, focusedStoredId, onR
   const isRunning = Boolean(run.is_active || run.scheduler_owned)
   const [archivedOptimistic, setArchivedOptimistic] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const { dotWrapRef, dotState } = useSessionDotState(run.id)
+  const showsArc = dotState === 'unread' || dotState === 'needs-input'
 
   if (archivedOptimistic) return null
 
@@ -2958,11 +2970,11 @@ function CronJobRunRow({ run, profileKey, profileTintColor, focusedStoredId, onR
         : 'text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
     ),
     children: [
-      isRunning &&
+      showsArc &&
         jsx('span', {
           'aria-hidden': 'true',
           className: 'arc-border arc-row',
-          style: profileTintColor ? { '--arc-c1': profileTintColor } : undefined
+          style: { '--arc-c1': dotState === 'needs-input' ? '#ef4444' : 'var(--ui-success)' }
         }),
       jsxs(RowButton, {
         className: 'flex min-w-0 flex-1 items-center gap-1.5 bg-transparent py-0.5 text-left',
@@ -2974,15 +2986,20 @@ function CronJobRunRow({ run, profileKey, profileTintColor, focusedStoredId, onR
           }
         },
         children: [
-          typeof SessionStatusDot === 'function'
-            ? jsx(SessionStatusDot, { storedSessionId: run.id })
-            : jsx('span', {
-                'aria-hidden': 'true',
-                className: cn(
-                  'size-1.5 shrink-0 rounded-full',
-                  isRunning ? 'bg-(--ui-accent) animate-pulse' : 'bg-(--ui-text-quaternary)'
-                )
-              }),
+          jsx('span', {
+            ref: dotWrapRef,
+            className: 'inline-flex size-2 shrink-0 items-center justify-center',
+            children:
+              typeof SessionStatusDot === 'function'
+                ? jsx(SessionStatusDot, { storedSessionId: run.id })
+                : jsx('span', {
+                    'aria-hidden': 'true',
+                    className: cn(
+                      'size-1.5 shrink-0 rounded-full',
+                      isRunning ? 'bg-(--ui-accent) animate-pulse' : 'bg-(--ui-text-quaternary)'
+                    )
+                  })
+          }),
           jsx('span', {
             className: 'truncate text-[0.75rem] tabular-nums leading-tight font-mono',
             children: timeLabel
@@ -4464,9 +4481,13 @@ function ProfileProjectsSection({
           }
         },
         children: [
-          canonicalTipId && typeof SessionStatusDot === 'function'
-            ? jsx(SessionStatusDot, { storedSessionId: canonicalTipId })
-            : jsx(Codicon, { name: 'hubot', size: '0.8125rem', className: 'shrink-0 text-(--ui-text-tertiary)' }),
+          jsx(SidebarRowLead, {
+            className: 'size-4 shrink-0',
+            children:
+              canonicalTipId && typeof SessionStatusDot === 'function'
+                ? jsx(SessionStatusDot, { storedSessionId: canonicalTipId })
+                : jsx(Codicon, { name: 'hubot', size: '0.8125rem', className: 'shrink-0 text-(--ui-text-tertiary)' })
+          }),
           jsx('span', {
             className: cn(
               'truncate text-[0.8125rem] leading-tight',
@@ -5502,17 +5523,36 @@ export default {
     dotStyle.id = `hermes-plugin-${ID}-status-dots`
     dotStyle.textContent = `
       span[role="status"][class*="bg-amber-500"] { background-color: #ef4444 !important; }
-      span[role="status"][class*="bg-(--ui-accent)"] { background-color: #eab308 !important; }
-      /* A quiet watchdog window does not mean the running turn has ended. */
-      span[role="status"][class*="border-(--ui-accent)"] {
-        background-color: #eab308 !important;
-        border-color: #eab308 !important;
+      @keyframes hermes-projects-working-spin {
+        to { transform: rotate(360deg); }
       }
-      /* The parent may be quiet, but subagents/background jobs are still working.
-         Preserve the host classes so the row observer can identify the state. */
+      /* All live work gets a small yellow spinner, including quiet turns and
+         subagents/background jobs. Keep host classes for row-state detection. */
+      span[role="status"][class*="bg-(--ui-accent)"],
+      span[role="status"][class*="border-(--ui-accent)"],
       span[role="status"][class*="border-(--ui-text-tertiary)"] {
-        background-color: #eab308 !important;
-        border-color: #eab308 !important;
+        display: inline-block;
+        flex-shrink: 0;
+        width: 0.5rem !important;
+        height: 0.5rem !important;
+        border: 0 !important;
+        background-color: transparent !important;
+        background-image: conic-gradient(transparent 0deg 60deg, #eab308 300deg 360deg) !important;
+        -webkit-mask: radial-gradient(circle closest-side, transparent 50%, #000 55%) !important;
+        mask: radial-gradient(circle closest-side, transparent 50%, #000 55%) !important;
+        animation: hermes-projects-working-spin 0.8s linear infinite !important;
+      }
+      :root[data-renderer-animations-paused] span[role="status"][class*="bg-(--ui-accent)"],
+      :root[data-renderer-animations-paused] span[role="status"][class*="border-(--ui-accent)"],
+      :root[data-renderer-animations-paused] span[role="status"][class*="border-(--ui-text-tertiary)"] {
+        animation-play-state: paused !important;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        span[role="status"][class*="bg-(--ui-accent)"],
+        span[role="status"][class*="border-(--ui-accent)"],
+        span[role="status"][class*="border-(--ui-text-tertiary)"] {
+          animation: none !important;
+        }
       }
       /* Done sessions: hollow dot. Mask punches out the centre so the ring
          keeps whatever colour the dot already has (project, unread, ...). */

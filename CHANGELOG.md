@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reserve glowing session borders for actionable chats: green for unread responses, red for pending input (command approval or clarification). Working, stalled, background, draft, and idle chats have no glow, including scheduled-run rows; preserve existing selection styling.
+- Show compact rotating yellow ring spinners for working, quiet-but-running, and background states. Preserve the host status classes, respect reduced motion, and pause animations while the Desktop renderer is inactive.
+- Share the host status-dot observer between regular and scheduled-run rows, and keep live-turn/done-marker logic independent from glow eligibility. Use fixed lead boxes on scheduled-run and Bot Chat rows to prevent labels shifting between spinner and dot states.
+- Validation: all 47 Node tests, ESM syntax, and Desktop admission lint pass. An isolated real-React Chromium fixture verifies actionable border transitions, spinner geometry and rotation, and pause/reduced-motion behavior in light and dark modes with zero page errors. The running Desktop window was not inspected because its CDP port is closed.
+
 - Add **Open In VS Code** to project `…` and right-click menus for projects with a folder. Launch through a short-lived Desktop terminal so it also works without an open chat, safely quotes folder paths, and reports launcher failures.
 
 - Add opt-in **Auto-archive done chats** setting: a periodic sweep archives only sessions marked as done once they have been idle for a configurable number of days (1/3/7/14/30, default 3), measured from the later of last activity and the done marker.
