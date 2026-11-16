@@ -946,7 +946,8 @@ function installBotChatActivityTracker(ctx) {
       // Offline/older gateways must not erase known watermarks; retry next tick.
     } finally {
       busy = false
-      persistSeen()
+      // A disposed poll must not overwrite its replacement's read receipts.
+      if (!disposed) persistSeen()
       if (rerun && !disposed) {
         rerun = false
         void tick()

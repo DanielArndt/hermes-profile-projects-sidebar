@@ -293,6 +293,47 @@ test('a failed storage write is flushed when storage recovers', async () => {
   assert.deepEqual(restarted.marked, [['bot-tip', 'default']])
 })
 
+for (const outcome of ['resolve', 'reject']) {
+  test(`a disposed poll that ${outcome}s cannot restore unread after a replacement tracker acknowledges it`, async () => {
+    const store = new Map()
+    const key = JSON.stringify(['local', 'default', 'bot-root'])
+    const old = harness(store)
+    old.profiles([bot(100)])
+    await old.poll()
+    old.profiles([bot(200)])
+    await old.poll()
+
+    let settle
+    old.gate(new Promise((resolve, reject) => {
+      settle = outcome === 'resolve' ? resolve : () => reject(new Error('offline'))
+    }))
+    for (const tick of old.intervals.keys()) tick()
+    await old.flush()
+    old.dispose()
+
+    const current = harness(store)
+    current.profiles([bot(200)])
+    await current.poll()
+    current.state.focusedStoredSessionId.set('bot-tip')
+    await current.flush()
+    current.state.focusedStoredSessionId.set(null)
+    await current.flush()
+    assert.equal(store.get('bot-chat-seen-activity')[key].pending, false)
+
+    settle()
+    await old.flush()
+    assert.equal(store.get('bot-chat-seen-activity')[key].pending, false,
+      'a late poll from the disposed tracker must preserve the read receipt')
+    current.dispose()
+
+    const reloaded = harness(store)
+    reloaded.profiles([bot(200)])
+    await reloaded.poll()
+    assert.deepEqual(reloaded.marked, [], 'unchanged read activity must stay read after reload')
+    reloaded.dispose()
+  })
+}
+
 test('a stale roster response is discarded across a disconnect and same-id reconnect', async () => {
   const h = harness()
   h.profiles([bot(100)])

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Prevent in-flight Bot Chat activity polls from writing stale unread receipts after the plugin is disposed during hot reload. Add regression coverage for late successful and failed polls, preserving acknowledgements across subsequent reloads.
+
 - Track canonical Bot Chat activity at plugin scope every 15 seconds and on focus/reconnect, independently of the Bots/Projects panes. Persist connection/profile/canonical-root activity and pending-unread receipts, then mark the current compression tip through the SDK unread store; seed existing history on first sight.
 - Acknowledge focused Bot Chats, including reads between polls, without re-arming unread for unchanged activity. Preserve baselines through offline/malformed responses and tolerate unavailable storage. Dispose timers/listeners and discard stale connection responses.
 - Validation: all 67 Node tests, ESM syntax, and Desktop admission lint pass. An isolated React/Chromium fixture verifies Bot Chat actionable-border transitions, selection/read clearing, and profile expansion in light and dark modes with zero page errors; running packaged Desktop UI was not inspected because it exposes no CDP port.
