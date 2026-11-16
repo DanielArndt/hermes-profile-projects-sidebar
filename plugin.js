@@ -1142,7 +1142,7 @@ function notifySidebarSessionsChanged() {
 
 // ── Auto-archive for done sessions ──────────────────────────────────────────
 // Mirrors Hermes' own idle auto-archive sweep, but scoped to chats this plugin
-// marks "done": archive once the chat has been inactive for N days, never
+// marks "done": archive once the chat has been inactive for N days (or hours), never
 // delete, and leave pinned / running / open chats alone. Nothing is archived
 // before the grace period measured from the moment it was marked done, so a
 // freshly finished chat is not hidden out from under the user.
@@ -1150,6 +1150,17 @@ function notifySidebarSessionsChanged() {
 function autoArchiveDoneDays(prefs) {
   const days = Number(prefs?.autoArchiveDoneDays)
   return Number.isFinite(days) && days > 0 ? days : DEFAULT_AUTO_ARCHIVE_DAYS
+}
+
+// The threshold is stored in days (fractional for sub-day choices, so existing
+// prefs keep working); the settings control uses 'Nh' ids for those.
+function autoArchiveDoneOptionId(days) {
+  return days < 1 ? `${Math.round(days * 24)}h` : String(days)
+}
+
+function autoArchiveDoneOptionDays(id) {
+  const value = String(id)
+  return value.endsWith('h') ? Number(value.slice(0, -1)) / 24 : Number(value)
 }
 
 function doneSessionKeyForRow(row, doneIds) {
@@ -6102,7 +6113,7 @@ export default {
             jsx(ToggleRow, {
               label: 'Auto-archive done chats',
               description:
-                'Archive chats marked as done once they have been inactive for the chosen number of days. Pinned, running, and currently open chats are never archived, and nothing is deleted — archived chats can be restored at any time.',
+                'Archive chats marked as done once they have been inactive for the chosen amount of time. Pinned, running, and currently open chats are never archived, and nothing is deleted — archived chats can be restored at any time.',
               checked: currentPrefs.autoArchiveDone === true,
               onChange: val => updatePrefs({ autoArchiveDone: val })
             }),
@@ -6113,9 +6124,11 @@ export default {
                     description:
                       'Counted from the latest of the chat’s last activity and when it was marked done.',
                     action: jsx(SegmentedControl, {
-                      value: String(autoArchiveDoneDays(currentPrefs)),
-                      onChange: val => updatePrefs({ autoArchiveDoneDays: Number(val) }),
+                      value: autoArchiveDoneOptionId(autoArchiveDoneDays(currentPrefs)),
+                      onChange: val => updatePrefs({ autoArchiveDoneDays: autoArchiveDoneOptionDays(val) }),
                       options: [
+                        { id: '4h', label: '4 hours' },
+                        { id: '8h', label: '8 hours' },
                         { id: '1', label: '1 day' },
                         { id: '3', label: '3 days' },
                         { id: '7', label: '7 days' },

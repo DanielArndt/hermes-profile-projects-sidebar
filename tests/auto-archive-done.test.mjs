@@ -46,7 +46,7 @@ function loadSweep(extra = {}) {
     ...extra
   }
   vm.runInNewContext(
-    `${constants}\n${botChatGuard}\n${sweep}\nthis.api = { sweepAutoArchiveDone, autoArchiveCandidateForRow, autoArchiveDoneDays }`,
+    `${constants}\n${botChatGuard}\n${sweep}\nthis.api = { sweepAutoArchiveDone, autoArchiveCandidateForRow, autoArchiveDoneDays, autoArchiveDoneOptionId, autoArchiveDoneOptionDays }`,
     context
   )
   return context.api
@@ -115,6 +115,30 @@ test('does not archive a chat whose done marker is newer than the grace period',
   const h = harness({ rowsByProfile: { default: { 0: { sessions: [idleRow('a')] } } }, doneIds: ['a'], meta })
   assert.equal((await h.run()).archived, 0)
   assert.equal(h.archives.length, 0)
+})
+
+test('sub-day thresholds map to hour options and archive after that many hours', async () => {
+  const { autoArchiveDoneOptionId, autoArchiveDoneOptionDays } = loadSweep()
+  for (const id of ['4h', '8h', '1', '3', '7', '14', '30']) {
+    assert.equal(autoArchiveDoneOptionId(autoArchiveDoneOptionDays(id)), id)
+  }
+  assert.equal(autoArchiveDoneOptionDays('4h'), 4 / 24)
+
+  const HOUR = DAY / 24
+  const row = idleRow('a', { last_active: (NOW - 5 * HOUR) / 1000 })
+  const fourHours = harness({
+    rowsByProfile: { default: { 0: { sessions: [row] } } },
+    doneIds: ['a'],
+    prefs: { autoArchiveDone: true, autoArchiveDoneDays: autoArchiveDoneOptionDays('4h') }
+  })
+  assert.equal((await fourHours.run()).archived, 1)
+
+  const eightHours = harness({
+    rowsByProfile: { default: { 0: { sessions: [row] } } },
+    doneIds: ['a'],
+    prefs: { autoArchiveDone: true, autoArchiveDoneDays: autoArchiveDoneOptionDays('8h') }
+  })
+  assert.equal((await eightHours.run()).archived, 0)
 })
 
 test('recent activity after marking done resets the idle clock', async () => {

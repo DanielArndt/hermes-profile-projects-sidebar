@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add **4 hours** and **8 hours** choices to **Archive done chats after**. Sub-day thresholds are stored as fractional days, so existing settings are unchanged.
+
 - Prevent in-flight Bot Chat activity polls from writing stale unread receipts after the plugin is disposed during hot reload. Add regression coverage for late successful and failed polls, preserving acknowledgements across subsequent reloads.
 
 - Track canonical Bot Chat activity at plugin scope every 15 seconds and on focus/reconnect, independently of the Bots/Projects panes. Persist connection/profile/canonical-root activity and pending-unread receipts, then mark the current compression tip through the SDK unread store; seed existing history on first sight.
