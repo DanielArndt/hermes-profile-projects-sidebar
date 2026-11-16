@@ -14,10 +14,12 @@ function harness(sessions, done = [], options = {}) {
   let cursor = 0
   let doneIds = new Set(done)
   const element = (type, props) => ({ type, props })
-  const store = { get: () => ({}), set() {} }
+  const store = { get: () => options.expandedProjects || {}, set() {} }
   const context = {
     $expandedProjectTrees: store,
-    $composerDrafts: {},
+    $composerDrafts: options.composerDrafts || {},
+    extractHydratedSessions: tree => tree.previewSessions || [],
+    haptic() {},
     useValue: value => value === store ? value.get() : value,
     useState: initial => {
       const index = cursor++
@@ -52,6 +54,7 @@ function harness(sessions, done = [], options = {}) {
   }
   return {
     render,
+    props: context.props,
     changeDone: ids => { doneIds = new Set(ids); listeners.get('done-changed')?.() },
     dispose: () => effects.forEach(cleanup => cleanup?.()),
     listeners
@@ -150,4 +153,86 @@ test('expansion is independent for each project', () => {
   toggle(first.render()).props.onClick({ stopPropagation() {} })
   assert.equal(toggle(first.render()).props['aria-expanded'], true)
   assert.equal(toggle(second.render()).props['aria-expanded'], false)
+})
+
+test('empty projects have no disclosure or empty child container when the placeholder is disabled', () => {
+  for (const isOpen of [false, true]) {
+    const tree = harness([], [], { isOpen, prefs: { showEmptyChatsPlaceholder: false } }).render()
+    assert.equal(nodes(tree, node => node.type === 'DisclosureCaret').length, 0)
+    assert.equal(nodes(tree, node => node.type === 'RowButton').length, 0)
+    assert.equal(nodes(tree, node => node.props?.['aria-expanded'] !== undefined).length, 0)
+    assert.equal(nodes(tree, node => node.type === 'div' && node.props.className?.includes('border-l')).length, 0)
+    assert.equal(nodes(tree, node => node.type === 'Button' && node.props['aria-label']?.startsWith('New session')).length, 1)
+  }
+})
+
+test('empty Home has no disclosure when the placeholder is disabled, but its new-session action still works', () => {
+  let started = 0
+  const tree = harness([], [], {
+    project: { id: '__no_project__', label: 'Home', isNoProject: true, sessionCount: 0 },
+    prefs: { showEmptyChatsPlaceholder: false },
+    onStartChatInProject: (profile, project, reuseDraft) => {
+      assert.equal(profile, 'personal')
+      assert.equal(project.id, '__no_project__')
+      assert.equal(reuseDraft, false)
+      started++
+    }
+  }).render()
+  assert.equal(nodes(tree, node => node.type === 'DisclosureCaret').length, 0)
+  const newSession = nodes(tree, node => node.type === 'Button' && node.props['aria-label']?.startsWith('New session'))[0]
+  newSession.props.onClick({ stopPropagation() {} })
+  assert.equal(started, 1)
+})
+
+test('the enabled placeholder keeps an empty project expandable', () => {
+  for (const showEmptyChatsPlaceholder of [undefined, true]) {
+    let toggled = 0
+    const view = harness([], [], {
+      isOpen: false,
+      prefs: { showEmptyChatsPlaceholder },
+      onToggleOpen: () => toggled++
+    })
+    let tree = view.render()
+    const header = nodes(tree, node => node.type === 'RowButton')[0]
+    assert.equal(header.props['aria-expanded'], false)
+    header.props.onClick()
+    assert.equal(toggled, 1)
+    view.props.isOpen = true
+    tree = view.render()
+    assert.equal(nodes(tree, node => node.type === 'button' && text(node).includes('No chats yet')).length, 1)
+  }
+})
+
+test('loaded, unloaded, hydrated and finished sessions keep the project expandable without the placeholder', () => {
+  const cases = [
+    harness([{ id: 'chat' }], [], { prefs: { showEmptyChatsPlaceholder: false } }),
+    harness([], [], { project: { id: 'project', sessionCount: 3, previewSessions: [] }, prefs: { showEmptyChatsPlaceholder: false } }),
+    harness([], [], { expandedProjects: { 'personal::project': { previewSessions: [{ id: 'hydrated' }] } }, prefs: { showEmptyChatsPlaceholder: false } }),
+    harness([{ id: 'done1' }, { id: 'done2' }], ['done1', 'done2'], { prefs: { showEmptyChatsPlaceholder: false } })
+  ]
+  for (const view of cases) {
+    const tree = view.render()
+    assert.equal(nodes(tree, node => node.type === 'DisclosureCaret').length, 1)
+    assert.equal(nodes(tree, node => node.type === 'RowButton')[0].props['aria-expanded'], true)
+    assert.equal(nodes(tree, node => node.type === 'div' && node.props.className?.includes('border-l')).length, 1)
+  }
+})
+
+test('a saved draft keeps a sessionless project expandable without the placeholder', () => {
+  const tree = harness([], [], { composerDrafts: { draft: { text: 'Unsent' } }, prefs: { showEmptyChatsPlaceholder: false } }).render()
+  assert.equal(nodes(tree, node => node.type === 'DisclosureCaret').length, 1)
+  assert.equal(nodes(tree, node => node.type === 'ProjectDraftRow').length, 1)
+})
+
+test('a mounted project updates its disclosure as sessions and the placeholder setting change', () => {
+  const view = harness([], [], { prefs: { showEmptyChatsPlaceholder: false } })
+  assert.equal(nodes(view.render(), node => node.type === 'RowButton').length, 0)
+  view.props.project = { ...view.props.project, previewSessions: [{ id: 'new' }], sessionCount: 1 }
+  assert.equal(nodes(view.render(), node => node.type === 'RowButton').length, 1)
+  view.props.project = { ...view.props.project, previewSessions: [], sessionCount: 0 }
+  assert.equal(nodes(view.render(), node => node.type === 'RowButton').length, 0)
+  view.props.prefs = { showEmptyChatsPlaceholder: true }
+  assert.equal(nodes(view.render(), node => node.type === 'RowButton').length, 1)
+  view.props.prefs = { showEmptyChatsPlaceholder: false }
+  assert.equal(nodes(view.render(), node => node.type === 'RowButton').length, 0)
 })

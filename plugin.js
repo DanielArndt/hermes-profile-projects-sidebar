@@ -3839,6 +3839,7 @@ function ProfileProjectRow({
     : allSessions
   const visibleSessions = unfinishedSessions.slice(0, numericLimit)
   const totalCount = Math.max(project.sessionCount || 0, allSessions.length)
+  const canExpand = totalCount > 0 || Boolean(projectDraft) || prefs.showEmptyChatsPlaceholder !== false
   const hiddenCount = Math.max(
     0,
     totalCount - visibleSessions.length - (groupFinishedSessions ? finishedSessions.length : 0)
@@ -4080,13 +4081,15 @@ function ProfileProjectRow({
         : 'text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
     ),
     children: [
-      jsxs(RowButton, {
-        'aria-expanded': isOpen,
+      jsxs(canExpand ? RowButton : 'div', {
+        'aria-expanded': canExpand ? isOpen : undefined,
         className: 'flex min-w-0 flex-1 items-center gap-1.5 bg-transparent py-0.5 text-left',
-        onClick: () => {
-          haptic('tap')
-          onToggleOpen()
-        },
+        onClick: canExpand
+          ? () => {
+              haptic('tap')
+              onToggleOpen()
+            }
+          : undefined,
         children: [
           jsx(ProjectGlyph, { project, size: '0.8125rem' }),
           jsxs('div', {
@@ -4109,11 +4112,12 @@ function ProfileProjectRow({
                         'shrink-0 rounded bg-(--ui-control-active-background) px-1 py-px text-[0.5625rem] text-(--ui-text-tertiary)',
                       children: 'repo'
                     }),
-                  jsx(DisclosureCaret, {
-                    className:
-                      'shrink-0 text-(--ui-text-tertiary) opacity-60 transition group-hover:opacity-100',
-                    open: isOpen
-                  })
+                  canExpand &&
+                    jsx(DisclosureCaret, {
+                      className:
+                        'shrink-0 text-(--ui-text-tertiary) opacity-60 transition group-hover:opacity-100',
+                      open: isOpen
+                    })
                 ]
               }),
               prefs.showPathsOnRows !== false &&
@@ -4267,7 +4271,7 @@ function ProfileProjectRow({
           )
         ]
       }),
-      isOpen &&
+      canExpand && isOpen &&
         jsxs('div', {
           className: 'ml-2.5 flex flex-col gap-px border-l border-(--ui-stroke-tertiary) py-0.5 pl-1.5',
           style: profileGuideColor ? { borderColor: profileGuideColor } : undefined,
