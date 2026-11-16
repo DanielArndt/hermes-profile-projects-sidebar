@@ -20,6 +20,7 @@
  */
 
 import {
+  ackStoredSessionId,
   atom,
   Blobatar,
   blobatarSvg,
@@ -56,6 +57,8 @@ import {
   Input,
   KEYBINDS_AREA,
   ListRow,
+  forgetSessionUnread,
+  markSessionUnreadFinished,
   PALETTE_AREA,
   PANES_AREA,
   PROFILE_SWATCHES,
@@ -796,6 +799,181 @@ function applyDraftWorkspaceCwd(targetPath, targetId, targetProfile) {
       }
     })
     .catch(() => null)
+}
+
+// Canonical chats are hidden from core's session lists. Poll at plugin scope,
+// not pane scope, and persist observed activity across reloads/offline deliveries.
+function installBotChatActivityTracker(ctx) {
+  const storageKey = 'bot-chat-seen-activity'
+  let seen = {}
+  try {
+    const stored = ctx.storage.get(storageKey, {})
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+      seen = Object.fromEntries(Object.entries(stored).flatMap(([key, value]) => {
+        const record = typeof value === 'number' ? { activity: value, pending: false } : value
+        return record && Number.isFinite(record.activity) && record.activity > 0
+          ? [[key, { activity: record.activity, pending: record.pending === true, tip: record.tip }]]
+          : []
+      }))
+    }
+  } catch {
+    // Storage may be unavailable; retain an in-memory baseline for this run.
+  }
+  const persistSeen = () => {
+    try {
+      ctx.storage.set(storageKey, seen)
+    } catch {
+      // Storage is best-effort; keep the pending receipt in memory.
+    }
+  }
+  const readStored = () => {
+    try {
+      const stored = ctx.storage.get(storageKey, {})
+      if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {}
+      return Object.fromEntries(Object.entries(stored).flatMap(([key, value]) => {
+        const record = typeof value === 'number' ? { activity: value, pending: false } : value
+        return record && Number.isFinite(record.activity) && record.activity > 0
+          ? [[key, { activity: record.activity, pending: record.pending === true, tip: record.tip }]]
+          : []
+      }))
+    } catch {
+      return {}
+    }
+  }
+  let busy = false
+  let disposed = false
+  let snapshot = []
+  let snapshotConnection = null
+  const announced = new Map()
+  const readTickets = new Map()
+  const locallyRead = new Set()
+  let rerun = false
+  let connectionEpoch = 0
+
+  const isFocused = (canonical, profile) => {
+    const owner = host.state.focusedSessionOwner?.get?.()
+    const connection = host.state.connectionId?.get?.() || 'local'
+    if (!owner || owner.connectionId !== connection) return false
+    return normalizeProfile(owner.profile) === profile &&
+      [canonical.id, canonical.resolved_id || canonical.id].includes(host.state.focusedStoredSessionId?.get?.())
+  }
+
+  const acknowledgeFocused = () => {
+    const connection = host.state.connectionId?.get?.() || 'local'
+    const owner = host.state.focusedSessionOwner?.get?.()
+    const id = host.state.focusedStoredSessionId?.get?.()
+    if (disposed || !id || !owner || owner.connectionId !== connection) return
+    readTickets.set(JSON.stringify([connection, owner.profile, id]), { ...owner, id })
+    for (const row of connection === snapshotConnection ? snapshot : []) {
+      const canonical = row?.canonical_session
+      const profile = normalizeProfile(row?.name)
+      if (!canonical?.id || !Number.isFinite(canonical.last_active) || !isFocused(canonical, profile)) continue
+      const key = JSON.stringify([connection, profile, canonical.id])
+      // Clear known receipts now; reconcile the read against a fresh gateway
+      // snapshot below, never mixing client time with gateway activity time.
+      seen = { ...seen, [key]: {
+        activity: Math.max(seen[key]?.activity || 0, canonical.last_active || 0),
+        pending: false, tip: canonical.resolved_id || canonical.id
+      } }
+      announced.delete(key)
+      locallyRead.add(key)
+      persistSeen()
+      ackStoredSessionId(canonical.resolved_id || canonical.id, profile)
+    }
+    if (busy) rerun = true
+    else void tick()
+  }
+
+  const tick = async () => {
+    if (disposed || busy || host.state.gateway?.get?.() !== 'open') return
+    busy = true
+    const reads = new Map(readTickets)
+    const requestEpoch = connectionEpoch
+    const connection = host.state.connectionId?.get?.() || 'local'
+    try {
+      const res = await host.request('profiles.list', { include_sessions: true })
+      if (
+        disposed ||
+        requestEpoch !== connectionEpoch ||
+        connection !== (host.state.connectionId?.get?.() || 'local')
+      ) return
+      if (!Array.isArray(res?.profiles)) return
+      const persisted = readStored()
+      for (const [key, record] of Object.entries(persisted)) {
+        const current = seen[key]
+        if (locallyRead.has(key)) continue
+        seen[key] = current && current.pending
+          ? { ...current, activity: Math.max(current.activity, record.activity) }
+          : { ...record, activity: Math.max(current?.activity || 0, record.activity) }
+      }
+      snapshot = res.profiles
+      snapshotConnection = connection
+      for (const row of snapshot) {
+        const canonical = row?.canonical_session
+        const ts = canonical?.last_active
+        if (!canonical?.id || !Number.isFinite(ts) || ts <= 0) continue
+        const profile = normalizeProfile(row.name)
+        const key = JSON.stringify([connection, profile, canonical.id])
+        const previous = seen[key]
+        const storedId = canonical.resolved_id || canonical.id
+        const focused = isFocused(canonical, profile) || [...reads.values()].some(read =>
+          read.connectionId === connection && normalizeProfile(read.profile) === profile &&
+          [canonical.id, storedId].includes(read.id))
+        if (focused) ackStoredSessionId(storedId, profile)
+        const pending = !focused && Boolean(previous && (previous.pending || ts > previous.activity))
+        const activity = Math.max(previous?.activity || 0, ts)
+        const oldTip = previous?.tip
+        if (pending && oldTip && oldTip !== storedId) {
+          forgetSessionUnread([oldTip], profile)
+          announced.delete(key)
+        }
+        const stamp = JSON.stringify([storedId, activity])
+        if (pending && announced.get(key) !== stamp) {
+          // Hidden rows cannot rehydrate core's persisted markers on their own.
+          // Replay outstanding delivery receipts once per tip/activity per run.
+          markSessionUnreadFinished(storedId, profile)
+          announced.set(key, stamp)
+        } else if (!pending) {
+          announced.delete(key)
+        }
+        seen = { ...seen, [key]: { activity, pending, tip: storedId } }
+        persistSeen()
+      }
+      for (const [key, ticket] of reads) {
+        if (readTickets.get(key) === ticket) readTickets.delete(key)
+      }
+    } catch {
+      // Offline/older gateways must not erase known watermarks; retry next tick.
+    } finally {
+      busy = false
+      persistSeen()
+      if (rerun && !disposed) {
+        rerun = false
+        void tick()
+      }
+    }
+  }
+
+  const wake = () => void tick()
+  const connectionChanged = () => {
+    connectionEpoch += 1
+    wake()
+  }
+  const unlisten = [
+    ...[host.state.focusedStoredSessionId, host.state.focusedSessionProfile, host.state.focusedSessionOwner]
+      .map(state => state?.listen?.(acknowledgeFocused)),
+    host.state.gateway?.listen?.(wake),
+    host.state.connectionId?.listen?.(connectionChanged)
+  ].filter(fn => typeof fn === 'function')
+  const timer = window.setInterval(wake, 15_000)
+  window.addEventListener('focus', wake)
+  wake()
+  ctx.onDispose?.(() => {
+    disposed = true
+    window.clearInterval(timer)
+    window.removeEventListener('focus', wake)
+    for (const stop of unlisten) stop()
+  })
 }
 
 function isCanonicalBotChatRow(row) {
@@ -2268,7 +2446,7 @@ function ProjectDraftRow({ draft, draftKey, profileTintColor, onOpen }) {
 
 // The SDK owns live state (including unread clearing on focus). Observe only
 // the dot inside our own row; its class names encode the host's resolved state.
-function useSessionDotState(sessionId) {
+function useSessionDotState(sessionId, visible = true) {
   const dotWrapRef = useRef(null)
   const [dotState, setDotState] = useState('idle')
 
@@ -2307,7 +2485,7 @@ function useSessionDotState(sessionId) {
       attributeFilter: ['class', 'role']
     })
     return () => obs.disconnect()
-  }, [sessionId])
+  }, [sessionId, visible])
 
   return { dotWrapRef, dotState }
 }
@@ -4167,6 +4345,7 @@ function ProfileProjectsSection({
 
   const canonical = profileRow?.canonical_session
   const canonicalTipId = canonical?.resolved_id || canonical?.id || null
+  const { dotWrapRef: botDotWrapRef, dotState: botDotState } = useSessionDotState(canonicalTipId, isOpen)
   const isBotChatSelected = Boolean(
     focusedStoredId &&
       canonical &&
@@ -4470,33 +4649,45 @@ function ProfileProjectsSection({
           ? cn(!tintColor && 'bg-(--ui-control-active-background)', 'text-foreground')
           : 'text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
       ),
-      children: jsxs(RowButton, {
-        'aria-label': `Open ${displayName} Bot Chat`,
-        className: 'flex min-w-0 flex-1 items-center gap-1.5 bg-transparent py-0.5 text-left',
-        onClick: openBotChat,
-        onAuxClick: e => {
-          if (e.button === 1) {
-            e.preventDefault()
-            openBotChat(e)
-          }
-        },
-        children: [
-          jsx(SidebarRowLead, {
-            className: 'size-4 shrink-0',
-            children:
-              canonicalTipId && typeof SessionStatusDot === 'function'
-                ? jsx(SessionStatusDot, { storedSessionId: canonicalTipId })
-                : jsx(Codicon, { name: 'hubot', size: '0.8125rem', className: 'shrink-0 text-(--ui-text-tertiary)' })
-          }),
+      children: [
+        (botDotState === 'unread' || botDotState === 'needs-input') &&
           jsx('span', {
-            className: cn(
-              'truncate text-[0.8125rem] leading-tight',
-              isBotChatSelected ? 'font-semibold text-foreground' : 'font-medium'
-            ),
-            children: 'Bot Chat'
-          })
-        ]
-      })
+            'aria-hidden': 'true',
+            className: 'arc-border arc-row',
+            style: { '--arc-c1': botDotState === 'needs-input' ? '#ef4444' : 'var(--ui-success)' }
+          }),
+        jsxs(RowButton, {
+          'aria-label': `Open ${displayName} Bot Chat`,
+          className: 'flex min-w-0 flex-1 items-center gap-1.5 bg-transparent py-0.5 text-left',
+          onClick: openBotChat,
+          onAuxClick: e => {
+            if (e.button === 1) {
+              e.preventDefault()
+              openBotChat(e)
+            }
+          },
+          children: [
+            jsx(SidebarRowLead, {
+              className: 'size-4 shrink-0',
+              children: jsx('span', {
+                ref: botDotWrapRef,
+                className: 'inline-flex items-center justify-center',
+                children:
+                  canonicalTipId && typeof SessionStatusDot === 'function'
+                    ? jsx(SessionStatusDot, { storedSessionId: canonicalTipId })
+                    : jsx(Codicon, { name: 'hubot', size: '0.8125rem', className: 'shrink-0 text-(--ui-text-tertiary)' })
+              })
+            }),
+            jsx('span', {
+              className: cn(
+                'truncate text-[0.8125rem] leading-tight',
+                isBotChatSelected ? 'font-semibold text-foreground' : 'font-medium'
+              ),
+              children: 'Bot Chat'
+            })
+          ]
+        })
+      ]
     },
     'bot-chat'
   )
@@ -5517,6 +5708,8 @@ export default {
   description:
     'Adds a Projects view tab in the sidebar broken down first by Profile, then by Project, and then by Session.',
   register(ctx) {
+    installBotChatActivityTracker(ctx)
+
     // Status dot palette: red = needs action (approval/clarify), yellow = agent
     // working. Upstream paints these amber/accent, so override by class match.
     const dotStyle = document.createElement('style')

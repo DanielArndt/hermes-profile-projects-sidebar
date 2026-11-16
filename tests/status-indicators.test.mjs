@@ -218,6 +218,8 @@ test('Bot Chat status has a fixed lead for both live dots and its fallback icon'
       SessionStatusDot: () => null,
       Codicon: 'Codicon',
       canonicalTipId,
+      botDotState: 'idle',
+      botDotWrapRef: { current: null },
       tintColor: null,
       isBotChatSelected: false,
       displayName: 'Personal',
@@ -227,8 +229,42 @@ test('Bot Chat status has a fixed lead for both live dots and its fallback icon'
     const lead = findNode(row, node => node.type === 'SidebarRowLead')
     assert.ok(lead, 'Bot Chat needs the same fixed lead box as session rows')
     assert.match(lead.props.className, /\bsize-4\b/)
-    assert.equal(lead.props.children.props.storedSessionId ?? null, canonicalTipId)
+    assert.equal(lead.props.children.props.children.props.storedSessionId ?? null, canonicalTipId)
   }
+})
+
+test('Bot Chat renders semantic action arcs around its observed status dot', () => {
+  const start = source.indexOf('  const botChatRow = jsx(')
+  const end = source.indexOf('  const cronJobs =', start)
+  const element = (type, props) => ({ type, props })
+  for (const botDotState of ['unread', 'needs-input', 'working', 'stalled', 'background', 'idle']) {
+    const row = vm.runInNewContext(`(() => { ${source.slice(start, end)}; return botChatRow })()`, {
+      jsx: element, jsxs: element,
+      RowButton: 'RowButton', SidebarRowLead: 'SidebarRowLead', SessionStatusDot: () => null, Codicon: 'Codicon',
+      canonicalTipId: 'bot-tip', botDotState, botDotWrapRef: { current: null },
+      tintColor: null, isBotChatSelected: false, displayName: 'Personal', openBotChat: () => {},
+      cn: (...classes) => classes.filter(Boolean).join(' ')
+    })
+    const arc = findNode(row, node => node.props?.className === 'arc-border arc-row')
+    if (botDotState === 'unread' || botDotState === 'needs-input') {
+      assert.equal(arc?.props.style['--arc-c1'], botDotState === 'unread' ? 'var(--ui-success)' : '#ef4444')
+    } else {
+      assert.equal(arc, null)
+    }
+    assert.ok(findNode(row, node => Boolean(node.props?.ref)), 'Bot Chat dot must be observed')
+  }
+  assert.match(source, /useSessionDotState\(canonicalTipId, isOpen\)/)
+})
+
+test('expanding a collapsed profile reattaches the Bot Chat dot observer', () => {
+  let dependencies
+  vm.runInNewContext(`${hook}; useSessionDotState('bot-tip', false)`, {
+    useRef: () => ({ current: null }),
+    useState: () => ['idle', () => {}],
+    useEffect: (_effect, deps) => { dependencies = Array.from(deps) }
+  })
+  assert.deepEqual(dependencies, ['bot-tip', false])
+  assert.match(source, /useSessionDotState\(canonicalTipId, isOpen\)/)
 })
 
 test('pending input retains its red status dot', () => {

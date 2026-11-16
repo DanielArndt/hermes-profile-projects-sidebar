@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Track canonical Bot Chat activity at plugin scope every 15 seconds and on focus/reconnect, independently of the Bots/Projects panes. Persist connection/profile/canonical-root activity and pending-unread receipts, then mark the current compression tip through the SDK unread store; seed existing history on first sight.
+- Acknowledge focused Bot Chats, including reads between polls, without re-arming unread for unchanged activity. Preserve baselines through offline/malformed responses and tolerate unavailable storage. Dispose timers/listeners and discard stale connection responses.
+- Validation: all 67 Node tests, ESM syntax, and Desktop admission lint pass. An isolated React/Chromium fixture verifies Bot Chat actionable-border transitions, selection/read clearing, and profile expansion in light and dark modes with zero page errors; running packaged Desktop UI was not inspected because it exposes no CDP port.
 - Reserve glowing session borders for actionable chats: green for unread responses, red for pending input (command approval or clarification). Working, stalled, background, draft, and idle chats have no glow, including scheduled-run rows; preserve existing selection styling.
 - Show compact rotating yellow ring spinners for working, quiet-but-running, and background states. Preserve the host status classes, respect reduced motion, and pause animations while the Desktop renderer is inactive.
 - Share the host status-dot observer between regular and scheduled-run rows, and keep live-turn/done-marker logic independent from glow eligibility. Use fixed lead boxes on scheduled-run and Bot Chat rows to prevent labels shifting between spinner and dot states.
