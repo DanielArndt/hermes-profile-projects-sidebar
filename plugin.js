@@ -4433,6 +4433,15 @@ function ProfileProjectsSection({
     })
   }, [projects, activeId, prefs, searchQuery, displayName, profileKey])
 
+  const [showEmptyProjects, setShowEmptyProjects] = useState(false)
+  const emptyProjects = sortedProjects.filter(
+    project => !project.isNoProject && !(project.sessionCount > 0) && !(project.previewSessions?.length > 0)
+  )
+  const groupEmptyProjects = !searchQuery && emptyProjects.length > 0
+  const visibleProjects = groupEmptyProjects
+    ? sortedProjects.filter(project => !emptyProjects.includes(project))
+    : sortedProjects
+
   const activeProjectForFocus = useMemo(() => {
     if (!isFocusedProfile) return null
     if (rawCwd) {
@@ -4736,6 +4745,45 @@ function ProfileProjectsSection({
     'bot-chat'
   )
 
+  const renderProjectRow = project => {
+    const projOpen = Boolean(searchQuery) || isProjectOpen(profileKey, project)
+    const isCurrentWorkspace =
+      isFocusedProfile && activeProjectForFocus === project.id
+    const canMoveCurrentChat =
+      isFocusedProfile &&
+      Boolean(focusedStoredId || host.state.focusedSessionId?.get?.()) &&
+      !isCurrentWorkspace
+
+    return jsx(
+      ProfileProjectRow,
+      {
+        project,
+        profileKey,
+        profileDisplayName: displayName,
+        profileTintColor: tintColor,
+        profileGuideColor:
+          tintConfig && tintColor ? profileColorSoft(tintColor, tintConfig.guide) : undefined,
+        allProfiles,
+        siblingProjects: projects,
+        isOpen: projOpen,
+        onToggleOpen: () => onToggleProjectOpen(profileKey, project),
+        isCurrentWorkspace,
+        focusedStoredId,
+        prefs,
+        searchQuery,
+        onEditProject,
+        onDeleteProject,
+        onStartChatInProject,
+        onMoveCurrentChatHere,
+        canMoveCurrentChat,
+        onTransferProject,
+        onRefresh,
+        os
+      },
+      `${profileKey}::${project.id}`
+    )
+  }
+
   const cronJobs = profGroup?.cronJobs || []
   const showScheduled = prefs.showScheduledBucket !== false
   const hideWhenEmpty = prefs.hideEmptyScheduled === true
@@ -4916,44 +4964,7 @@ function ProfileProjectsSection({
             botChatRow,
             scheduledBucketRow,
             ...(sortedProjects.length > 0
-              ? sortedProjects.map(project => {
-                  const projOpen = Boolean(searchQuery) || isProjectOpen(profileKey, project)
-                  const isCurrentWorkspace =
-                    isFocusedProfile && activeProjectForFocus === project.id
-                  const canMoveCurrentChat =
-                    isFocusedProfile &&
-                    Boolean(focusedStoredId || host.state.focusedSessionId?.get?.()) &&
-                    !isCurrentWorkspace
-
-                  return jsx(
-                    ProfileProjectRow,
-                    {
-                      project,
-                      profileKey,
-                      profileDisplayName: displayName,
-                      profileTintColor: tintColor,
-                      profileGuideColor:
-                        tintConfig && tintColor ? profileColorSoft(tintColor, tintConfig.guide) : undefined,
-                      allProfiles,
-                      siblingProjects: projects,
-                      isOpen: projOpen,
-                      onToggleOpen: () => onToggleProjectOpen(profileKey, project),
-                      isCurrentWorkspace,
-                      focusedStoredId,
-                      prefs,
-                      searchQuery,
-                      onEditProject,
-                      onDeleteProject,
-                      onStartChatInProject,
-                      onMoveCurrentChatHere,
-                      canMoveCurrentChat,
-                      onTransferProject,
-                      onRefresh,
-                      os
-                    },
-                    `${profileKey}::${project.id}`
-                  )
-                })
+              ? visibleProjects.map(renderProjectRow)
               : [
                   jsxs(
                     'button',
@@ -4969,7 +4980,28 @@ function ProfileProjectsSection({
                     },
                     'empty-create'
                   )
-                ])
+                ]),
+            groupEmptyProjects &&
+              jsxs('button', {
+                type: 'button',
+                'aria-expanded': showEmptyProjects,
+                className:
+                  'flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-[0.6875rem] font-medium text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground',
+                onClick: event => {
+                  event.stopPropagation()
+                  setShowEmptyProjects(value => !value)
+                },
+                children: [
+                  jsx(Codicon, {
+                    name: showEmptyProjects ? 'chevron-up' : 'chevron-down',
+                    size: '0.7rem'
+                  }),
+                  jsx('span', {
+                    children: `${showEmptyProjects ? 'Hide' : 'Show'} ${emptyProjects.length} project${emptyProjects.length === 1 ? '' : 's'} without sessions`
+                  })
+                ]
+              }),
+            groupEmptyProjects && showEmptyProjects && emptyProjects.map(renderProjectRow)
           ]
         })
     ]
