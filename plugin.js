@@ -3780,6 +3780,18 @@ function ProfileProjectRow({
   const expandKey = `${profileKey}::${project.id}`
   const hydratedTree = expandedMap[expandKey] || null
   const [hydrating, setHydrating] = useState(false)
+  const [showFinishedSessions, setShowFinishedSessions] = useState(false)
+  const [doneSessions, setDoneSessions] = useState(readDoneSessions)
+  useEffect(() => {
+    const sync = () => setDoneSessions(readDoneSessions())
+    sync()
+    window.addEventListener(DONE_SESSIONS_EVENT, sync)
+    window.addEventListener('storage', sync)
+    return () => {
+      window.removeEventListener(DONE_SESSIONS_EVENT, sync)
+      window.removeEventListener('storage', sync)
+    }
+  }, [])
 
   const rootPath = projectRootCwd(project)
   const formattedPath = rootPath ? displayPath(rootPath) : ''
@@ -3818,9 +3830,40 @@ function ProfileProjectRow({
       ? Infinity
       : Math.max(1, parseInt(prefs.previewLimit || '5', 10) || 5)
 
-  const visibleSessions = allSessions.slice(0, numericLimit)
+  const finishedSessions = allSessions.filter(session =>
+    doneSessions.has(session._lineage_root_id || session.id)
+  )
+  const groupFinishedSessions = !searchQuery && finishedSessions.length > 1
+  const unfinishedSessions = groupFinishedSessions
+    ? allSessions.filter(session => !doneSessions.has(session._lineage_root_id || session.id))
+    : allSessions
+  const visibleSessions = unfinishedSessions.slice(0, numericLimit)
   const totalCount = Math.max(project.sessionCount || 0, allSessions.length)
-  const hiddenCount = Math.max(0, totalCount - visibleSessions.length)
+  const hiddenCount = Math.max(
+    0,
+    totalCount - visibleSessions.length - (groupFinishedSessions ? finishedSessions.length : 0)
+  )
+
+  const renderSessionRow = session => {
+    const isSelected =
+      Boolean(focusedStoredId) &&
+      (session.id === focusedStoredId || session._lineage_root_id === focusedStoredId)
+    return jsx(
+      ProjectSessionRow,
+      {
+        session,
+        profileKey,
+        projectColor: project.color,
+        profileTintColor,
+        isSelected,
+        siblingProjects,
+        project,
+        onStartChatInProject,
+        onRefresh
+      },
+      `${profileKey}::${session.id}`
+    )
+  }
 
   const handleExpandAllSessions = async event => {
     event?.stopPropagation?.()
@@ -4240,28 +4283,8 @@ function ProfileProjectRow({
                 },
                 `draft::${projectDraftKey}`
               ),
-            visibleSessions.length > 0
-              ? visibleSessions.map(session => {
-                  const isSelected =
-                    Boolean(focusedStoredId) &&
-                    (session.id === focusedStoredId ||
-                      session._lineage_root_id === focusedStoredId)
-                  return jsx(
-                    ProjectSessionRow,
-                    {
-                      session,
-                      profileKey,
-                      projectColor: project.color,
-                      profileTintColor,
-                      isSelected,
-                      siblingProjects,
-                      project,
-                      onStartChatInProject,
-                      onRefresh
-                    },
-                    `${profileKey}::${session.id}`
-                  )
-                })
+            allSessions.length > 0
+              ? visibleSessions.map(renderSessionRow)
               : prefs.showEmptyChatsPlaceholder !== false &&
                 jsxs('button', {
                   type: 'button',
@@ -4273,6 +4296,27 @@ function ProfileProjectRow({
                     jsx('span', { children: 'No chats yet — start a chat' })
                   ]
                 }),
+            groupFinishedSessions &&
+              jsxs('button', {
+                type: 'button',
+                'aria-expanded': showFinishedSessions,
+                className:
+                  'flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-[0.6875rem] font-medium text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground',
+                onClick: event => {
+                  event.stopPropagation()
+                  setShowFinishedSessions(value => !value)
+                },
+                children: [
+                  jsx(Codicon, {
+                    name: showFinishedSessions ? 'chevron-up' : 'chevron-down',
+                    size: '0.7rem'
+                  }),
+                  jsx('span', {
+                    children: `${showFinishedSessions ? 'Hide' : 'Show'} ${finishedSessions.length} finished sessions`
+                  })
+                ]
+              }),
+            groupFinishedSessions && showFinishedSessions && finishedSessions.map(renderSessionRow),
             hiddenCount > 0 &&
               jsxs('button', {
                 type: 'button',
