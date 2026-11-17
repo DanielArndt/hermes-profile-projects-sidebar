@@ -109,6 +109,7 @@ const DEFAULT_PREFS = {
   hideEmptyScheduled: false,
   autoArchiveDone: false,
   autoArchiveDoneDays: DEFAULT_AUTO_ARCHIVE_DAYS,
+  collapseFinishedSessions: true,
   showPathsOnRows: true,
   showEmptyChatsPlaceholder: true,
   projectSort: 'recent', // 'recent' | 'name' | 'sessions'
@@ -3845,7 +3846,8 @@ function ProfileProjectRow({
   const finishedSessions = allSessions.filter(session =>
     doneSessions.has(session._lineage_root_id || session.id)
   )
-  const groupFinishedSessions = !searchQuery && finishedSessions.length > 1
+  const groupFinishedSessions =
+    prefs.collapseFinishedSessions !== false && !searchQuery && finishedSessions.length > 1
   const unfinishedSessions = groupFinishedSessions
     ? allSessions.filter(session => !doneSessions.has(session._lineage_root_id || session.id))
     : allSessions
@@ -6139,6 +6141,13 @@ export default {
                   })
                 ]
               : []),
+            jsx(ToggleRow, {
+              label: 'Collapse finished sessions',
+              description:
+                'Group projects with two or more finished chats behind a collapsible “Show x finished sessions” row.',
+              checked: currentPrefs.collapseFinishedSessions !== false,
+              onChange: val => updatePrefs({ collapseFinishedSessions: val })
+            }),
             jsx(ToggleRow, {
               label: 'Show auto-discovered repositories',
               description:

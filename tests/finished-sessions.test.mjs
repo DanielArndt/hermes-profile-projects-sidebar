@@ -155,6 +155,44 @@ test('expansion is independent for each project', () => {
   assert.equal(toggle(second.render()).props['aria-expanded'], false)
 })
 
+test('when collapseFinishedSessions is disabled, multiple finished sessions remain inline with no disclosure', () => {
+  const view = harness(sessions, ['done1', 'done2'], {
+    prefs: { previewLimit: 'all', collapseFinishedSessions: false }
+  })
+  const tree = view.render()
+  assert.deepEqual(rows(tree), ['active', 'done1', 'done2'])
+  assert.equal(toggle(tree), undefined)
+})
+
+test('disabling collapseFinishedSessions respects preview limits and show-more counts', () => {
+  const view = harness([
+    { id: 'done1' }, { id: 'done2' }, { id: 'active1' }, { id: 'active2' }
+  ], ['done1', 'done2'], {
+    prefs: { previewLimit: '2', collapseFinishedSessions: false }
+  })
+  const tree = view.render()
+  assert.deepEqual(rows(tree), ['done1', 'done2'])
+  assert.equal(toggle(tree), undefined)
+  const more = nodes(tree, node => node.type === 'button' && text(node).startsWith('Show 2 more'))
+  assert.equal(more.length, 1)
+})
+
+test('a mounted project updates finished sessions disclosure when collapseFinishedSessions setting changes', () => {
+  const view = harness(sessions, ['done1', 'done2'], {
+    prefs: { previewLimit: 'all', collapseFinishedSessions: true }
+  })
+  assert.equal(text(toggle(view.render())), 'Show 2 finished sessions')
+  assert.deepEqual(rows(view.render()), ['active'])
+
+  view.props.prefs = { previewLimit: 'all', collapseFinishedSessions: false }
+  assert.equal(toggle(view.render()), undefined)
+  assert.deepEqual(rows(view.render()), ['active', 'done1', 'done2'])
+
+  view.props.prefs = { previewLimit: 'all', collapseFinishedSessions: true }
+  assert.equal(text(toggle(view.render())), 'Show 2 finished sessions')
+  assert.deepEqual(rows(view.render()), ['active'])
+})
+
 test('empty projects have no disclosure or empty child container when the placeholder is disabled', () => {
   for (const isOpen of [false, true]) {
     const tree = harness([], [], { isOpen, prefs: { showEmptyChatsPlaceholder: false } }).render()

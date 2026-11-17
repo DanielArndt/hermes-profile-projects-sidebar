@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add setting preference to configure collapsing finished sessions behind "Show x finished sessions" (`collapseFinishedSessions`, enabled by default). When disabled, finished chats remain inline with active chats in their normal list order.
+
 - Add **4 hours** and **8 hours** choices to **Archive done chats after**. Sub-day thresholds are stored as fractional days, so existing settings are unchanged.
 
 - Prevent in-flight Bot Chat activity polls from writing stale unread receipts after the plugin is disposed during hot reload. Add regression coverage for late successful and failed polls, preserving acknowledgements across subsequent reloads.
